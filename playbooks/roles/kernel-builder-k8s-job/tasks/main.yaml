@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- name: "Ensure the gh-runner-kernel-builder namespace exists"
+  kubernetes.core.k8s:
+    name: gh-runner-kernel-builder
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: "Get private docker registry IP"
+  ansible.builtin.set_fact:
+    registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
+
+#This is a dependency for the private container registry
+- name: "Build and push kernel-builder-k8s-job image that is used for the cronjob to build the kernel"
+  shell: |
+    docker build -t {{ registry_ip }}:32000/kernel-builder-k8s-job -f Dockerfile.kernel-builder-k8s-job .
+    docker push {{ registry_ip }}:32000/kernel-builder-k8s-job:latest
+  args:
+    chdir: ./roles/kernel-builder-k8s-job/templates/
+
+- name: "Install docker-daemon-config configMap"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: docker-daemon-config
+        namespace: gh-runner-kernel-builder
+      data:
+        daemon.json: |
+          {
+            "insecure-registries" : ["registry-service.docker-registry.svc.cluster.local"]
+          }
+
+- name: "Create the kernel-builder deployment which requires DinD to push the articts into the private docker registry"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: kernel-builder
+        namespace: gh-runner-kernel-builder
+      spec:
+        schedule: "0 5 * * *"
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                - name: builder
+                  image: container-registry.local:5000/kernel-builder-k8s-job:latest
+                  env:
+                    - name: DOCKER_HOST
+                      value: unix:///var/run/docker.sock
+                  resources:
+                    requests:
+                      memory: "8Gi"
+                      cpu: "4"
+                    limits:
+                      memory: "8Gi"
+                      cpu: "4"
+                  securityContext:
+                    privileged: true
+                  volumeMounts:
+                  - name: docker-daemon-config
+                    mountPath: /etc/docker/daemon.json
+                    subPath: daemon.json
+                volumes:
+                - name: docker-daemon-config
+                  configMap:
+                    name: docker-daemon-config
+                restartPolicy: OnFailure
+

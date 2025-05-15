@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+#Requirement: The network card and all PCIe devices that shall be passed to
+#kubevirt VMs must be rebound to vfio on the bare metal deployed OS
+#(eg. through kernel args)
+- name: "Longhorn dependency - Install open-iscsi"
+  become: yes
+  ansible.builtin.package:
+    name: open-iscsi
+    state: present
+
+- name: "Longhorn dependency - Install nfs"
+  become: yes
+  ansible.builtin.package:
+    name: nfs-common
+    state: present
+
+- name: "Longhorn dependency -Disable multipathd service"
+  become: yes
+  systemd:
+    name: multipathd
+    enabled: no
+    state: stopped
+
+- name: Grep for intel in cpuinfo
+  shell: "cat /proc/cpuinfo | grep -ic intel"
+  register: cpuinfo_intel_grep_output
+  ignore_errors: true
+
+- name: Set is_intel
+  set_fact:
+    is_intel: true
+  when: cpuinfo_intel_grep_output.stdout != "0"
+
+- name: Set is_amd
+  set_fact:
+    is_amd: true
+  when: cpuinfo_intel_grep_output.stdout == "0"
+
+- name: "Enable nested kvm for amd cpus"
+  become: yes
+  copy:
+    content: |
+      options kvm_amd nested=1
+    dest: "/etc/modprobe.d/kvm.conf"
+    mode: '0644'
+  when: is_amd is defined and is_amd
+
+- name: "Enable nested kvm for intel cpus"
+  become: yes
+  copy:
+    content: |
+      options kvm_intel nested=1
+    dest: "/etc/modprobe.d/kvm.conf"
+    mode: '0644'
+  when: is_intel is defined and is_intel
+
+- name: "Ensure iscsi_tcp module is loaded on boot"
+  become: yes
+  lineinfile:
+    path: /etc/modules
+    line: iscsi_tcp
+    state: present
+
+
+- name: "Install udev rule for mellanox network card 100G sriov"
+  become: yes
+  copy:
+    src: ./enp129s0f0np0.rules
+    dest: /etc/udev/rules.d/enp129s0f0np0.rules
+    mode: 0644
+  notify: Reboot the cluster machine
+

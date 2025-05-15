@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+- include_vars: ../../../../secrets.enc
+#Longhorn requirements are installed though configure-physical-cluster-node https://longhorn.io/docs/1.8.0/deploy/install/#installation-requirements
+#Sets also the device_ownership_from_security_context = true to fix this issue: https://github.com/longhorn/longhorn/issues/8527
+
+- name: "Add Longhorn helm repo"
+  kubernetes.core.helm_repository:
+    name: longhorn
+    repo_url: "{{ longhorn_helm_chart_url }}"
+
+- name: "Install Longhorn chart"
+  kubernetes.core.helm:
+    name: longhorn
+    update_repo_cache: true
+    namespace: longhorn-system
+    create_namespace: true
+    chart_ref: longhorn/longhorn
+    chart_version: "{{ longhorn_version }}"
+    set_values:
+      - value: defaultReplicaCount=3
+      - value: createDefaultDiskLabeledNodes=true
+
+- name: "Wait for Longhorn pods to become ready"
+  shell: "kubectl wait --namespace=longhorn-system --for=condition=Ready pod --all --timeout=1200s"
+
+#https://longhorn.io/docs/1.8.0/deploy/accessing-the-ui/longhorn-ingress/
+
+- name: "Ensure ~/tmp-ansible exists for configuring Longhorn UI access"
+  file:
+    path: "~/tmp-ansible"
+    state: directory
+
+- name: "Check if auth file exists"
+  stat:
+    path: "~/tmp-ansible/auth"
+  register: auth_file
+
+- name: "Create auth file"
+  shell: "echo {{ longhorn_ui_auth_user }}:$(openssl passwd -apr1 {{ longhorn_ui_auth_password }}) | xargs > ~/tmp-ansible/auth"
+  when: not auth_file.stat.exists
+
+- name: "Get content of auth file"
+  shell: "cat ~/tmp-ansible/auth | base64"
+  register: auth_contents
+
+- name: "Create Longhorn basic auth secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: "basic-auth"
+        namespace: "longhorn-system"
+      data:
+        auth: "{{auth_contents.stdout}}"
+
+- name: "Copy Longhorn ingress deployment file"
+  copy:
+    src: ./longhorn-ingress.yaml
+    dest: ~/tmp-ansible/longhorn-ingress.yaml
+
+- name: "Apply Longhorn ingress deployment"
+  kubernetes.core.k8s:
+    state: present
+    namespace: longhorn-system
+    src: ~/tmp-ansible/longhorn-ingress.yaml
+
+# Enable snapshot support
+# https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/enable-csi-snapshot-support/
+
+- name: "Git checkout"
+  ansible.builtin.git:
+    repo: 'https://github.com/kubernetes-csi/external-snapshotter.git'
+    dest: ~/tmp-ansible/external-snapshotter
+    version: "{{ longhorn_external_snapshotter_version }}"
+
+- name: "Kubectl create crd"
+  shell: "kubectl create -k client/config/crd"
+  args:
+    chdir: ~/tmp-ansible/external-snapshotter
+
+- name: "Kubectl create snapshot-controller"
+  shell: "kubectl create -k deploy/kubernetes/snapshot-controller"
+  args:
+    chdir: ~/tmp-ansible/external-snapshotter
+
+# The parameter type 'bi' is required for kubevirt snapshots
+# https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/csi-volume-snapshot-associated-with-longhorn-backing-image/
+- name: "Create longhorn VolumeSnapshotClass"
+  shell: |
+    cat <<EOF | kubectl apply -f -
+    kind: VolumeSnapshotClass
+    apiVersion: snapshot.storage.k8s.io/v1
+    metadata:
+      name: longhorn
+    driver: driver.longhorn.io
+    deletionPolicy: Delete
+    parameters:
+      type: bi
+      export-type: qcow2
+    EOF
+

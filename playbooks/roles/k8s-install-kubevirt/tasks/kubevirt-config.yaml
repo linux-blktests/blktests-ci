@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+---
+apiVersion: kubevirt.io/v1
+kind: KubeVirt
+metadata:
+  name: kubevirt
+  namespace: kubevirt
+spec:
+  configuration:
+    developerConfiguration:
+      featureGates:
+        - ExpandDisks
+        - HostDevices
+        - DataVolumes
+        - VMExport
+        - Macvtap
+        - ExperimentalVirtiofsSupport
+        - Snapshot
+        - Sidecar
+    permittedHostDevices:
+      pciHostDevices:
+        - pciVendorSelector: 1b96:2600
+          resourceName: devices.kubevirt.io/nvme-wdc-zn540
+        - pciVendorSelector: 1b96:2610
+          resourceName: devices.kubevirt.io/nvme-wdc-sn640
+        - pciVendorSelector: 1b96:2400
+          resourceName: devices.kubevirt.io/nvme-wdc-sn640
+        - pciVendorSelector: 1b96:2500
+          resourceName: devices.kubevirt.io/nvme-wdc-sn840
+        - pciVendorSelector: 8086:4140
+          resourceName: devices.kubevirt.io/nvme-intel-optane

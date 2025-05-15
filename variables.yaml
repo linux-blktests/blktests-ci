@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+#Longhorn
+longhorn_helm_chart_url: "https://charts.longhorn.io"
+longhorn_version: "1.8.0"
+# The external snapshotter version depends on the longhorn version.
+# See: https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/enable-csi-snapshot-support/
+longhorn_external_snapshotter_version: "v8.2.0"
+
+#rook-ceph
+rook_ceph_version: "v1.16.4"
+rook_ceph_repo: "https://github.com/rook/rook.git"
+
+#prometheus
+prometheus_helm_chart_url: "https://prometheus-community.github.io/helm-charts"
+
+#KubeVirt
+kubevirt_version: "v1.4.0"
+kubevirt_cri_version: "v1.61.1"
+
+#Networking
+kubemacpool_version: "v0.46.0"
+kubemacpool_range_start: "02:23:8d:00:00:00"
+kubemacpool_range_end: "02:23:8d:FF:FF:FF"
+sriovcni_version: "v2.9.0"
+sriovnetworkdeviceplugin_version: "v3.9.0"
+
+#kubevirt-actions-runner
+kubevirt_actions_runner_repo: "https://github.com/MaisenbacherD/kubevirt-actions-runner"
+kubevirt_actions_runner_repo_branch: "on-demand-kernel"
+
+#private_container_registry
+private_container_registry_size: "1000Gi"
+
+#The following vars are defined in `secrets.enc`:
+#longhorn_ui_auth_user
+#longhorn_ui_auth_password

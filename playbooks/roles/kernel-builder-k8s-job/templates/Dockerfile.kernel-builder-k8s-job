@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+#TODO: Improve this builder image to be more versatile
+FROM docker:28.0.2-dind
+ADD --chmod=0755 ./build-fedora-kernel.sh /build-fedora-kernel.sh
+ADD --chmod=0755 ./build-kernel.sh /build-kernel.sh
+ADD --chmod=0755 ./get-base-kernel-artifacts.sh /get-base-kernel-artifacts.sh
+ADD ./Dockerfile.linux-kernel-containerdisk /Dockerfile.linux-kernel-containerdisk
+CMD ["/build-fedora-kernel.sh"]

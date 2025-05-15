@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="net", ENV{ID_NET_DRIVER}=="mlx5_core", ATTR{device/sriov_numvfs}="48"

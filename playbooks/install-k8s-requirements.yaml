@@ -1,0 +1,150 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- name: "Configure the physical Kubernetes cluster nodes"
+  hosts: physical_k8s_cluster_nodes
+  tasks:
+    - name: "Configure physical k8s cluster node"
+      include_role:
+        name: configure-physical-k8s-cluster-node
+
+- name: "Install required kubernetes componentes"
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - include_vars: ../variables.yaml
+    - include_vars: ../secrets.enc
+
+    - name: "Wait until Kubernetes cluster is up and running again (in case of reboot)"
+      command: kubectl get nodes --no-headers
+      register: kubernetes_nodes_final
+      until: "'NotReady' not in kubernetes_nodes_final.stdout and 'Error from server' not in kubernetes_nodes_final.stderr"
+      retries: 30
+      delay: 20
+
+    # Install networking features (multus, sriov-cni, sriov-network-device-plugin)
+    - name: "Enable multus"
+      shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: helm.cattle.io/v1
+        kind: HelmChart
+        metadata:
+          name: multus
+          namespace: kube-system
+        spec:
+          repo: https://rke2-charts.rancher.io
+          chart: rke2-multus
+          targetNamespace: kube-system
+          valuesContent: |-
+            config:
+              fullnameOverride: multus
+              cni_conf:
+                confDir: /var/lib/rancher/k3s/agent/etc/cni/net.d
+                binDir: /var/lib/rancher/k3s/data/cni/
+                kubeconfig: /var/lib/rancher/k3s/agent/etc/cni/net.d/multus.d/multus.kubeconfig
+            manifests:
+              dhcpDaemonSet: true
+        EOF
+
+    #https://github.com/k8snetworkplumbingwg/sriov-cni
+    - name: "Install sriov-cni"
+      kubernetes.core.k8s:
+        state: present
+        src: https://raw.githubusercontent.com/k8snetworkplumbingwg/sriov-cni/refs/tags/{{ sriovcni_version }}/images/sriov-cni-daemonset.yaml
+
+    #https://github.com/k8snetworkplumbingwg/sriov-network-device-plugin?tab=readme-ov-file#install-sr-iov-network-device-plugin
+    #Derived from https://github.com/k8snetworkplumbingwg/sriov-network-device-plugin/blob/master/deployments/configMap.yaml
+    - name: "Install sriov-network-device-plugin config map"
+      shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: sriovdp-config
+          namespace: kube-system
+        data:
+          config.json: |
+            {
+                "resourceList": [
+                  {
+                    "resourceName": "vf_100G",
+                    "resourcePrefix": "nvidia.com",
+                    "selectors": {
+                      "vendors": ["15b3"],
+                      "devices": ["101e"]
+                    }
+                  }
+                ]
+            }
+        EOF
+
+    - name: "Install sriov-network-device-plugin daemonset"
+      kubernetes.core.k8s:
+        state: present
+        src: https://raw.githubusercontent.com/k8snetworkplumbingwg/sriov-network-device-plugin/refs/tags/{{ sriovnetworkdeviceplugin_version }}/deployments/sriovdp-daemonset.yaml
+
+    - name: "Configure multus network-attachment-definition"
+      shell: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: "k8s.cni.cncf.io/v1"
+        kind: NetworkAttachmentDefinition
+        metadata:
+          name: sriov
+          namespace: default
+          annotations:
+            k8s.v1.cni.cncf.io/resourceName: nvidia.com/vf_100G
+        spec:
+          config: |
+            {
+              "cniVersion": "0.3.1",
+              "type": "sriov",
+              "name": "sriov",
+              "ipam": {
+                "type": "host-local",
+                "subnet": "172.16.16.0/21",
+                "rangeStart": "172.16.19.1",
+                "rangeEnd": "172.16.19.254"
+              }
+            }
+        EOF
+
+    - name: "Install longhorn"
+      include_role:
+        name: k8s-install-longhorn
+
+    - name: "Install KubeVirt"
+      include_role:
+        name: k8s-install-kubevirt
+
+    - name: "Install private container registry"
+      include_role:
+        name: k8s-install-private-container-registry
+
+- name: "Configure the physical Kubernetes cluster nodes to accept the container registry"
+  hosts: physical_k8s_cluster_nodes
+  tasks:
+    - name: Configure k3s to use the private registry
+      become: yes
+      copy:
+        dest: /etc/rancher/k3s/registries.yaml
+        content: |
+          mirrors:
+            "container-registry.local:5000":
+              endpoint:
+                - "http://localhost:32000"
+
+    - name: Restart k3s service
+      become: yes
+      systemd:
+        name: k3s
+        state: restarted
+
+#TODO: Add step to config the following on local machine where docker image
+# should be pushed from:
+# /etc/docker/daemon.json
+# {
+#   "insecure-registries": ["<node-ip>:32000"]
+# }

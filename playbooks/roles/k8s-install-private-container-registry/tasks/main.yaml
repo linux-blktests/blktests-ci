@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+
+- name: "Create docker-registry namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: docker-registry
+
+- name: "Create PersistentVolumeClaim for container registry"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: docker-registry-pvc
+        namespace: docker-registry
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "{{ private_container_registry_size }}"
+        storageClassName: longhorn
+
+- name: "Deploy Docker registry"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: registry
+        namespace: docker-registry
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: registry
+        template:
+          metadata:
+            labels:
+              app: registry
+          spec:
+            containers:
+            - name: registry
+              image: registry:2
+              ports:
+              - containerPort: 5000
+              volumeMounts:
+              - name: storage
+                mountPath: /var/lib/registry
+            volumes:
+            - name: storage
+              persistentVolumeClaim:
+                claimName: docker-registry-pvc
+
+- name: Expose Docker registry service
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: registry-service
+        namespace: docker-registry
+      spec:
+        type: NodePort
+        selector:
+          app: registry
+        ports:
+          - protocol: TCP
+            port: 80
+            targetPort: 5000
+            nodePort: 32000 
+
+# TOOD: on local machine where docker image should be pushed from
+# /etc/docker/daemon.json
+# {
+#   "insecure-registries": ["<node-ip>:32000"]
+# }

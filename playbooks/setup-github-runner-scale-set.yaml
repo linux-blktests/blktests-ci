@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+#TODO: Make VM resources configurable via vars_prompt
+- name: "Create a kubevirt-actions-runner scale set to spawn KubeVirt VMs on demand from a GitHub workflow"
+  hosts: localhost
+  gather_facts: no
+  vars_prompt:
+    - name: runner_set_name
+      prompt: Suffix of the GitHub runner set
+      private: false
+    - name: github_config_url
+      prompt: GitHub repo URL that the runner set should serve
+      private: false
+    - name: github_workflow_id
+      prompt: GitHub workflow id that the runner set should serve. Get this id via https://docs.github.com/en/rest/actions/workflows?apiVersion=2022-11-28#list-repository-workflows
+      private: false
+    - name: github_token
+      prompt: GitHub token
+      private: false
+  tasks:
+    - name: "Install the kernel builder cron job for building nightly kernels"
+      include_role:
+        name: kernel-builder-k8s-job
+
+    - name: "Install kubevirt-actions-runner scale set and its dependencies"
+      include_role:
+        name: k8s-install-kubevirt-actions-runner-controller

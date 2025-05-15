@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+githubConfigUrl: "{{ github_config_url }}"
+githubConfigSecret: "{{ github_config_secret }}"
+maxRunners: 3
+minRunners: 0
+template:
+  #The follwoing is a modification of what `containerMode.type=dind` is doing.
+  #We just need to add the docker-daemon-config configMap which allows us to use the local insecure docker registry
+  spec:
+    initContainers:
+    - name: init-dind-externals
+      image: ghcr.io/actions/actions-runner:latest
+      command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+      volumeMounts:
+        - name: dind-externals
+          mountPath: /home/runner/tmpDir
+    containers:
+    - name: runner
+      image: ghcr.io/actions/actions-runner:latest
+      command: ["/home/runner/run.sh"]
+      env:
+        - name: DOCKER_HOST
+          value: unix:///var/run/docker.sock
+      volumeMounts:
+        - name: work
+          mountPath: /home/runner/_work
+        - name: dind-sock
+          mountPath: /var/run
+      resources:
+        limits:
+          cpu: "4.0"
+          memory: "8Gi"
+        requests:
+          cpu: "4.0"
+          memory: "8Gi"
+    - name: dind
+      image: docker:dind
+      args:
+        - dockerd
+        - --host=unix:///var/run/docker.sock
+        - --group=$(DOCKER_GROUP_GID)
+      env:
+        - name: DOCKER_GROUP_GID
+          value: "123"
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: work
+          mountPath: /home/runner/_work
+        - name: dind-sock
+          mountPath: /var/run
+        - name: dind-externals
+          mountPath: /home/runner/externals
+        - name: docker-daemon-config
+          mountPath: /etc/docker/daemon.json
+          subPath: daemon.json
+    volumes:
+    - name: work
+      emptyDir: {}
+    - name: dind-sock
+      emptyDir: {}
+    - name: dind-externals
+      emptyDir: {}
+    - name: docker-daemon-config
+      configMap:
+        name: docker-daemon-config

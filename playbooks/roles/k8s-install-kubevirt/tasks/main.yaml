@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+
+- name: "Install kubernetes python package"
+  pip:
+    name: kubernetes
+    state: present
+
+- name: "Install KubeVirt operator"
+  kubernetes.core.k8s:
+    state: present
+    src: https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/kubevirt-operator.yaml
+
+- name: "Install KubeVirt custom resource"
+  kubernetes.core.k8s:
+    state: present
+    src: https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/kubevirt-cr.yaml
+
+- name: "Install Virtctl"
+  become: yes
+  get_url:
+    url: https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/virtctl-{{ kubevirt_version }}-linux-amd64
+    dest: /usr/local/bin/virtctl
+    mode: 0755
+
+- name: "Wait for KubeVirt components to become ready"
+  shell: |
+    kubectl -n kubevirt wait kv kubevirt --for condition=Available --timeout=600s
+
+- name: "Ensure ~/tmp-ansible exists for KubeVirt configuration"
+  file:
+    path: "~/tmp-ansible"
+    state: directory
+
+- name: "Copy KubeVirt config deployment file"
+  copy:
+    src: ./kubevirt-config.yaml
+    dest: ~/tmp-ansible/kubevirt-config.yaml
+
+- name: "Enable required KubeVirt config features"
+  kubernetes.core.k8s:
+    state: present
+    src: ~/tmp-ansible/kubevirt-config.yaml
+
+- name: "Wait for KubeVirt pods to become ready"
+  shell: "kubectl wait --namespace=kubevirt --for=condition=Ready pod --all --timeout=1200s"
+
+- name: "Wait for KubeVirt deployment to become ready"
+  shell: "kubectl wait --namespace=kubevirt --for=jsonpath='{.status.phase}'=Deployed kubevirt.kubevirt.io/kubevirt --all --timeout=1200s"
+
+- name: "Download kubemacpool - kubemacpool is responsible for supplying an individual MAC address and therefore an individual IP for sriov network interfaces"
+  get_url:
+    url: https://raw.githubusercontent.com/k8snetworkplumbingwg/kubemacpool/{{ kubemacpool_version }}/config/release/kubemacpool.yaml
+    dest: ~/tmp-ansible/kubemacpool.yaml
+
+- name: "Set the MAC address range start for kubemacpool"
+  replace:
+    path: ~/tmp-ansible/kubemacpool.yaml
+    regexp: '02:00:00:00:00:00'
+    replace: "{{ kubemacpool_range_start }}"
+
+- name: "Set the MAC address range end for kubemacpool"
+  replace:
+    path: ~/tmp-ansible/kubemacpool.yaml
+    regexp: '02:FF:FF:FF:FF:FF'
+    replace: "{{ kubemacpool_range_end }}"
+
+- name: "Install kubemacpool"
+  kubernetes.core.k8s:
+    state: present
+    src: ~/tmp-ansible/kubemacpool.yaml
+
+# Install KubeVirt CDI
+- name: "Install KubeVirt CDI operator for VM image repository"
+  kubernetes.core.k8s:
+    state: present
+    src: https://github.com/kubevirt/containerized-data-importer/releases/download/{{ kubevirt_cri_version }}/cdi-operator.yaml
+
+- name: "Install KubeVirt CDI custom resource for VM image repository"
+  kubernetes.core.k8s:
+    state: present
+    src: https://github.com/kubevirt/containerized-data-importer/releases/download/{{ kubevirt_cri_version }}/cdi-cr.yaml

@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+githubConfigUrl: "{{ github_config_url }}"
+githubConfigSecret: "{{ github_config_secret }}"
+maxRunners: 3
+minRunners: 0
+template:
+  spec:
+    serviceAccountName: kubevirt-actions-runner
+    containers:
+    - name: runner
+      image: container-registry.local:5000/kubevirt-actions-runner:latest
+      command: []
+      env:
+        - name: KUBEVIRT_VM_TEMPLATE
+          value: "vm-template"
+        - name: GITHUB_WORKFLOW_ID
+          value: "{{ github_workflow_id }}"
+        - name: GITHUB_ORG
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['actions.github.com/organization']
+        - name: GITHUB_REPO
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['actions.github.com/repository']
+        - name: PATCH_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.annotations['actions.github.com/patch-id']
+        - name: RUNNER_NAME
+          value: runner-patchid-$(PATCH_ID)

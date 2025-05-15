@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+FROM fedora:41
+
+ARG KERNEL_TREE
+ARG KERNEL_COMMIT_SHA
+
+RUN dnf update -y && \
+    dnf install -y \
+    git \
+    gcc \
+    make \
+    bc \
+    bison \
+    flex \
+    elfutils-libelf-devel \
+    openssl-devel \
+    openssl \
+    grub2 \
+    dracut \
+    vim \
+    uuid \
+    mkisofs \
+    libguestfs-tools \
+    wget
+
+RUN mkdir -p /output
+RUN mkdir -p /version
+
+ADD ./get-base-kernel-artifacts.sh .
+RUN chmod 755 get-base-kernel-artifacts.sh
+ADD ./build-kernel.sh .
+RUN chmod 755 build-kernel.sh
+
+# Extracting kernel config and initramfs from fedora cloud image
+RUN ./get-base-kernel-artifacts.sh
+
+#vmlinuz and initramfs will end up in /output
+RUN export KERNEL_TREE=${KERNEL_TREE} && export KERNEL_COMMIT_SHA=${KERNEL_COMMIT_SHA} && ./build-kernel.sh
+#Print kernel version for the build.log
+RUN cat /version/tag
+
+#Building the containerdisk that brings the kernel artifacts into the VirtualMachine deployment
+#https://kubevirt.io/user-guide/storage/disks_and_volumes/#containerdisk-workflow-example
+#https://github.com/kubevirt/kubevirt/issues/14240
+FROM scratch
+COPY --chown=107:107 --from=0 /output/* /boot/
+#In case a cloud image should be added to the containerdisk it can be done like so:
+#ADD --chown=107:107 https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2 /disk/
+#For now we are using an unmodified fedora:41 cloud image

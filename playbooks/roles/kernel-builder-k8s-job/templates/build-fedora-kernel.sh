@@ -9,10 +9,12 @@ set -e
 set -x
 dockerd --host=unix:///var/run/docker.sock --group=123 &
 KERNEL_TREE=https://github.com/torvalds/linux
-KERNEL_COMMIT_SHA=master
+KERNEL_REF=master
+KERNEL_TAG_OVERWRITE=linux-master
 docker build \
   --build-arg KERNEL_TREE=${KERNEL_TREE} \
-  --build-arg KERNEL_COMMIT_SHA=${KERNEL_COMMIT_SHA} \
+  --build-arg KERNEL_REF=${KERNEL_REF} \
+  --build-arg KERNEL_TAG_OVERWRITE=${KERNEL_TAG_OVERWRITE} \
   -t linux-kernel-containerdisk \
   -f Dockerfile.linux-kernel-containerdisk . 2>&1 | tee build.log
 #Setting KERNEL_VERSION var which is latern needed for notifying the VM what kernel to pick up

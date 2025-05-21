@@ -9,8 +9,13 @@ set -e
 set -x
 
 cd /
-git clone -b $KERNEL_COMMIT_SHA --depth=1 $KERNEL_TREE
+mkdir -p /linux
 cd /linux
+git init
+git remote add origin $KERNEL_TREE
+git fetch origin --depth=5 "${KERNEL_REF}"
+git checkout FETCH_HEAD
+git log -1
 
 cp /base-kernel-config /linux/.config
 yes "" | make olddefconfig
@@ -84,9 +89,11 @@ find . | cpio -o -H newc | gzip -c > /initramfs.cpio.gz
 
 cd /linux
 mkdir -p /version
-#git describe --always --match=NeVeRmAtCh --abbrev=12 --dirty
-#echo "KERNEL_VERSION=$(git rev-parse --short=12 HEAD)" > /version/tag
-echo "KERNEL_VERSION=linus-master" > /version/tag
+if [ -z "$KERNEL_TAG_OVERWRITE" ]; then
+  echo "KERNEL_VERSION=$(git describe --always --match=NeVeRmAtCh --abbrev=12 --dirty)" > /version/tag;
+else
+  echo "KERNEL_VERSION=$KERNEL_TAG_OVERWRITE" > /version/tag;
+fi
 source /version/tag
 
 

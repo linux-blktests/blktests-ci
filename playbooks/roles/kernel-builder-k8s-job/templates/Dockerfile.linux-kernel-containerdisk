@@ -7,7 +7,8 @@
 FROM fedora:41
 
 ARG KERNEL_TREE
-ARG KERNEL_COMMIT_SHA
+ARG KERNEL_REF
+ARG KERNEL_TAG_OVERWRITE=""
 
 RUN dnf update -y && \
     dnf install -y \
@@ -40,7 +41,10 @@ RUN chmod 755 build-kernel.sh
 RUN ./get-base-kernel-artifacts.sh
 
 #vmlinuz and initramfs will end up in /output
-RUN export KERNEL_TREE=${KERNEL_TREE} && export KERNEL_COMMIT_SHA=${KERNEL_COMMIT_SHA} && ./build-kernel.sh
+RUN export KERNEL_TREE=${KERNEL_TREE} && \
+    export KERNEL_REF=${KERNEL_REF} && \
+    export KERNEL_TAG_OVERWRITE=${KERNEL_TAG_OVERWRITE} && \
+    ./build-kernel.sh
 #Print kernel version for the build.log
 RUN cat /version/tag
 

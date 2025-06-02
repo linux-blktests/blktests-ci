@@ -123,6 +123,10 @@
       include_role:
         name: k8s-install-private-container-registry
 
+    - name: "Install logging logging stack"
+      include_role:
+        name: k8s-install-logging-stack
+
 - name: "Configure the physical Kubernetes cluster nodes to accept the container registry"
   hosts: physical_k8s_cluster_nodes
   tasks:

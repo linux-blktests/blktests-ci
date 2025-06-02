@@ -1,0 +1,210 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+
+- name: Add Grafana repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: https://grafana.github.io/helm-charts
+
+#https://devopscube.com/setup-grafana-loki/
+- name: Install loki
+  kubernetes.core.helm:
+    name: loki
+    chart_ref: grafana/loki
+    release_namespace: logging
+    create_namespace: true
+    values:
+      loki:
+        commonConfig:
+          replication_factor: 1
+        storage:
+          type: 'filesystem'
+          bucketNames:
+            chunks: chunks
+            ruler: ruler
+            admin: admin
+        schemaConfig:
+          configs:
+            - from: "2024-04-01"
+              store: tsdb
+              object_store: filesystem
+              schema: v13
+              index:
+                prefix: loki_index_
+                period: 24h
+        storage_config:
+          filesystem:
+            directory: /tmp/loki/chunks
+        pattern_ingester:
+          enabled: true
+        limits_config:
+          allow_structured_metadata: true
+          volume_enabled: true
+        ruler:
+          enable_api: true
+        auth_enabled: false
+      minio:
+        enabled: false
+      deploymentMode: SingleBinary
+      singleBinary:
+        replicas: 1
+        persistence:
+          storageClass: longhorn
+          accessModes:
+            - ReadWriteOnce
+          size: 20Gi
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+      sidecar:
+        image:
+          repository: kiwigrid/k8s-sidecar
+          tag: 1.30.3
+        resources:
+          requests:
+            cpu: 50m
+            memory: 50Mi
+          limits:
+            cpu: 100m
+            memory: 100Mi
+      backend:
+        replicas: 0
+      read:
+        replicas: 0
+      write:
+        replicas: 0
+      chunksCache:
+        allocatedMemory: 500
+  ignore_errors: true
+
+- name: Install alloy
+  kubernetes.core.helm:
+    name: alloy
+    chart_ref: grafana/alloy
+    release_namespace: logging
+    create_namespace: true
+    values:
+      alloy:
+        configMap:
+          content: |-
+            logging {
+              level = "debug"
+              format = "logfmt"
+            }
+            discovery.kubernetes "pods" {
+              role = "pod"
+            }
+            discovery.relabel "pods" {
+              targets = discovery.kubernetes.pods.targets
+
+              rule {
+                source_labels = ["__meta_kubernetes_namespace"]
+                target_label = "namespace"
+                action = "replace"
+              }
+
+              rule {
+                source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+                target_label = "app"
+                action = "replace"
+              }
+
+              rule {
+                source_labels = ["__meta_kubernetes_pod_container_name"]
+                target_label = "container"
+                action = "replace"
+              }
+
+              rule {
+                source_labels = ["__meta_kubernetes_pod_name"]
+                target_label = "pod"
+                action = "replace"
+              }
+            }
+            loki.source.kubernetes "pods" {
+              targets    = discovery.relabel.pods.output
+              forward_to = [loki.process.process.receiver]
+            }
+            loki.process "process" {
+              forward_to = [loki.write.loki.receiver]
+
+              stage.drop {
+                older_than          = "1h"
+                drop_counter_reason = "too old"
+              }
+              stage.match { 
+                selector = "{instance=~\".*\"}"
+                stage.json {
+                  expressions = {
+                    level = "\"level\"",
+                  }
+                }
+                stage.labels {
+                  values = { 
+                    level = "level",
+                  }
+                }
+              }
+              stage.label_drop {
+                values = [ "service_name" ]
+              }
+            }
+            loki.write "loki" {
+              endpoint {
+                url = "http://loki-gateway/loki/api/v1/push"
+              }
+            }
+        mounts:
+          varlog: true
+          dockercontainers: true
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+  ignore_errors: true
+
+- name: Install grafana
+  kubernetes.core.helm:
+    name: alloy
+    chart_ref: grafana/grafana
+    release_namespace: logging
+    create_namespace: true
+    values_files: "{{ role_path }}/templates/grafana-values.yaml"
+    values:
+      image:
+        repository: grafana/grafana
+        tag: latest
+        pullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      datasources:
+        datasources.yaml:
+          apiVersion: 1
+          datasources:
+          - name: Loki
+            type: loki
+            url: http://loki-gateway.logging.svc.cluster.local
+            access: proxy
+            isDefault: false
+            editable: true
+      service:
+        type: NodePort
+        port: 80
+  ignore_errors: true

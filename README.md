@@ -265,6 +265,19 @@ kubectl delete ns gh-runner-<repo-name>
 ---
 
 ## Further notes and tips
+### Accessing logs through Grafana Loki
+On your workstation query the admin password, which you should change on the
+first login, and forward the port for Grafana:
+```
+kubectl get secret --namespace logging grafana -o jsonpath="{.data.admin-password}" | base64 --decode | xargs
+kubectl port-forward service/grafana 3000:80 -n logging
+```
+Then you can access the Grafana dashboard via:
+http://localhost:3000/
+
+Logs can be queried though the Explorer with the Loki data source or in
+'Drilldown'.
+
 ### Using private docker registry
 On your workstation:
 ```

@@ -107,6 +107,8 @@ cp /linux/.config /output/config-${KERNEL_VERSION}
 
 #Pack the modules in a isofs so we can easily mount it in the VM via the same container disk
 cd /tmp/initramfs/usr/lib/modules/
+echo "$KERNEL_REF" > kernel-ref.info
+echo "$KERNEL_VERSION" > kernel-version.info
 tar -czvf /tmp/kernel-modules.tar.gz .
 mkisofs -o /output/kernel-modules.isofs /tmp/kernel-modules.tar.gz
 chmod 644 /output/kernel-modules.isofs

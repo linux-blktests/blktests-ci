@@ -37,6 +37,8 @@ RUN chmod 755 get-base-kernel-artifacts.sh
 ADD ./build-kernel.sh .
 RUN chmod 755 build-kernel.sh
 
+COPY --from=quay.io/containerdisks/fedora:42 /disk/disk.img /base-fedora-cloud-img.qcow2
+
 # Extracting kernel config and initramfs from fedora cloud image
 RUN ./get-base-kernel-artifacts.sh
 

@@ -148,7 +148,7 @@
   kubernetes.core.k8s:
     namespace: "gh-runner-{{ runner_set_name }}"
     state: present
-    src: ~/tmp-ansible/kubevirt-actions-runner/fedora-vm/fedora-var-kernel-vm-template.yml
+    src: "{{ role_path }}/templates/fedora-var-kernel-vm-template.yaml"
 
 - name: "Get private docker registry IP"
   ansible.builtin.set_fact:

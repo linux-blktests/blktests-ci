@@ -6,9 +6,6 @@
 
 - include_vars: ../../../../variables.yaml
 
-#TODO: We probably need to rename the arc-*-listener to include the
-#runner_set_name variable such that we can easier identify the project they
-#are listening on.
 - name: "Ensure the gh-runner-{{ runner_set_name }} namespace exists"
   kubernetes.core.k8s:
     name: gh-runner-{{ runner_set_name }}
@@ -27,6 +24,7 @@
     name: arc
     namespace: arc-systems
     create_namespace: true
+    chart_version: "{{ gha_rss_version }}"
     chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
   when: arc_installed.rc != 0
 
@@ -101,10 +99,10 @@
             if [[ "$ns" =~ /dev/nvme[0-9]+n[0-9]+$ ]]; then
               ctrl=$(echo $ns | sed 's/n[0-9]*$//')
               if sudo nvme effects-log $ctrl -c 0x02 --output-format=json | jq -r '.[] | {io_cmd_set}' | grep -iq zone ; then
-                echo "ZBD${ZBDCOUNTER}=${ns}" >> /opt/runner/.env
+                echo "ZBD${ZBDCOUNTER}=${ns}" >> /etc/environment
                 ZBDCOUNTER=$((ZBDCOUNTER+1))
               else
-                echo "BDEV${BDEVCOUNTER}=${ns}" >> /opt/runner/.env
+                echo "BDEV${BDEVCOUNTER}=${ns}" >> /etc/environment
                 BDEVCOUNTER=$((BDEVCOUNTER+1))
               fi
             fi
@@ -115,86 +113,30 @@
     path: "~/tmp-ansible"
     state: directory
 
-- name: Generate arc-kernel-builder-scale-set-values.yaml from template
+- name: Generate arc-vm-scale-set-values.yaml from template
   template:
-    src: arc-kernel-builder-scale-set-values.yaml.j2
-    dest: ~/tmp-ansible/arc-kernel-builder-scale-set-values.yaml
+    src: arc-vm-scale-set-values.yaml.j2
+    dest: ~/tmp-ansible/arc-vm-scale-set-values.yaml
   vars:
     github_config_secret: "github-config-secret"
 
-- name: Check if arc-kernel-builder package is installed
+- name: Check if arc-vm-* package is installed
   shell: |
-    helm list -n gh-runner-{{ runner_set_name }} -q | grep -w arc-kernel-builder
+    helm list -n gh-runner-{{ runner_set_name }} -q | grep -w arc-vm-{{ runner_set_name }}
   register: arc_kernel_builder_installed
   ignore_errors: true
 
-- name: "Create arc-kernel-builder for {{ runner_set_name }}. This runner set is responsible for building the kernel and creating the resulting container images in our local container registry"
-  kubernetes.core.helm:
-    name: "arc-kernel-builder"
-    namespace: "gh-runner-{{ runner_set_name }}"
-    create_namespace: true
-    chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
-    values_files: "{{ lookup('ansible.builtin.env', 'HOME') }}/tmp-ansible/arc-kernel-builder-scale-set-values.yaml"
-  when: arc_kernel_builder_installed.rc != 0
-
-- name: "Clone kubevirt-actions-runner"
-  ansible.builtin.git:
-    repo: "{{ kubevirt_actions_runner_repo }}"
-    dest: ~/tmp-ansible/kubevirt-actions-runner
-    version: "{{ kubevirt_actions_runner_repo_branch }}"
-    force: true
-
-- name: "Deploy vm-template for {{ runner_set_name }}"
-  kubernetes.core.k8s:
-    namespace: "gh-runner-{{ runner_set_name }}"
-    state: present
-    src: "{{ role_path }}/templates/fedora-var-kernel-vm-template.yaml"
-
-- name: "Get private docker registry IP"
-  ansible.builtin.set_fact:
-    registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
-
-- name: Check if kubevirt-actions-runner is up to date
-  shell: |
-    GIT_VERSION=$(git describe --always --match=NeVeRmAtCh --abbrev=10 --dirty)
-    docker pull {{ registry_ip }}:32000/kubevirt-actions-runner:$GIT_VERSION
-  args:
-    chdir: ~/tmp-ansible/kubevirt-actions-runner/
-  register: kar_up_to_date
-  ignore_errors: true
-
-- name: "Make sure the kubevirt-actions-runner runner image is build an pushed to the private docker registry"
-  shell: |
-    GIT_VERSION=$(git describe --always --match=NeVeRmAtCh --abbrev=10 --dirty)
-    docker build -t {{ registry_ip }}:32000/kubevirt-actions-runner:latest -t {{ registry_ip }}:32000/kubevirt-actions-runner:$GIT_VERSION .
-    docker push --all-tags {{ registry_ip }}:32000/kubevirt-actions-runner
-  args:
-    chdir: ~/tmp-ansible/kubevirt-actions-runner
-  when: kar_up_to_date.rc != 0
-
-- name: Setup service account for kubevirt-actions-runner to spawn VMs
+- name: Setup service account for kubevirt-actions-runner to manage VMs
   kubernetes.core.k8s:
     state: present
     template: ../templates/kubevirt-actions-runner-rbac.yaml.j2
-    
-- name: Generate arc-kernel-vm-runner-scale-set-values.yaml from template
-  template:
-    src: arc-kernel-vm-runner-scale-set-values.yaml.j2
-    dest: ~/tmp-ansible/arc-kernel-vm-runner-scale-set-values.yaml
-  vars:
-    github_config_secret: "github-config-secret"
 
-- name: Check if arc-vm-runner-set package is installed
-  shell: |
-    helm list -n gh-runner-{{ runner_set_name }} -q | grep -w arc-vm-runner-set
-  register: arc_vm_runner_set_installed
-  ignore_errors: true
-
-- name: "Create arc-vm-runner-set for {{ runner_set_name }}. This runner set is spawning the VMs."
+- name: "Create arc-vm for {{ runner_set_name }}. This runner set is responsible for building the kernel and creating the resulting container images in our local container registry. It also allows to spawn KubeVirt VMs in our cluster"
   kubernetes.core.helm:
-    name: "arc-vm-runner-set"
+    name: "arc-vm-{{ runner_set_name }}"
     namespace: "gh-runner-{{ runner_set_name }}"
     create_namespace: true
+    chart_version: "{{ gha_rss_version }}"
     chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
-    values_files: "{{ lookup('ansible.builtin.env', 'HOME') }}/tmp-ansible/arc-kernel-vm-runner-scale-set-values.yaml"
-  when: arc_vm_runner_set_installed.rc != 0
+    values_files: "{{ lookup('ansible.builtin.env', 'HOME') }}/tmp-ansible/arc-vm-scale-set-values.yaml"
+  when: arc_kernel_builder_installed.rc != 0

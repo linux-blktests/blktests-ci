@@ -7,9 +7,9 @@
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
-  name: vm-template
+  name: {{ vm_name }}
 spec:
-  runStrategy: Manual
+  runStrategy: Always
   template:
     metadata:
       name: runner
@@ -27,8 +27,6 @@ spec:
             kernelArgs: "no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root=/dev/vda4 rootflags=subvol=root"
         devices:
           filesystems:
-            - name: runner-info
-              virtiofs: {}
             - name: prepare-nvme-devices
               virtiofs: {}
           disks:
@@ -77,8 +75,8 @@ spec:
                 - name: fedora
                   sudo: ["ALL=(ALL) NOPASSWD:ALL"]
                   groups: users, admin, docker, podman
-              mounts:
-                - [ runner-info, /runner-info/, virtiofs, "rw,relatime,user=fedora" ]
+                  ssh_authorized_keys:
+                    {{ vm_ssh_authorized_keys | indent( width=20 ) }}
               runcmd:
                 - "sudo mkdir /mnt/prepare-nvme-devices"
                 - "sudo mount -t virtiofs prepare-nvme-devices /mnt/prepare-nvme-devices"
@@ -92,15 +90,10 @@ spec:
                 - "sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
                 - "sudo systemctl enable --now docker"
                 - "sudo chown -R fedora: /var/run/docker.sock"
-                - "sudo mkdir /opt/runner"
-                - "sudo cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /opt/runner/"
-                - "sudo chmod +x /opt/runner/prepare-nvme-devices.sh"
-                - "curl -sL https://github.com/actions/runner/releases/download/v2.323.0/actions-runner-linux-x64-2.323.0.tar.gz | sudo tar -xz -C /opt/runner"
-                - "sudo /opt/runner/bin/installdependencies.sh"
-                - "sudo /opt/runner/prepare-nvme-devices.sh"
-                - "sudo chown -R fedora: /opt/runner"
-                - "sudo runuser -l fedora -c 'export $(xargs </opt/runner/.env) && /opt/runner/run.sh --jitconfig $(jq -r '.jitconfig' /runner-info/runner-info.json)'"
-                - "sudo poweroff"
+                - "sudo cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh"
+                - "sudo chmod +x /prepare-nvme-devices.sh"
+                - "sudo /prepare-nvme-devices.sh"
+                - "sudo touch /vm-ready"
 
 #In case you want to use podman instead of docker:
 # - "sudo loginctl enable-linger fedora"

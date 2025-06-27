@@ -9,7 +9,7 @@ when new storage related kernel contributions are proposed.
 ### 📝TODOs
 - kernel-builder-scale set is limited to 4 cpus and 8Gi memory
   -> this should be configurable
-- move vm-template in this repo and make the resource consumption variable
+- Make the VM resources configurable (eg through instance types)
 
 ## Architecture
 To achieve maximal flexibility and good resource utilization we decided to
@@ -21,14 +21,18 @@ on demand triggered by a single GitHub workflow.
 This workflow defines the exact kernel, test and on which physical devices
 the tests should be run on.
 
-We can't use a pre-registered self-hosted GitHub runner instance to simply
+We can't use a pre-registered self-hosted GitHub runner VM to simply
 pick up a workflow and install/reboot a new kernel because it would lose
 connection and fail the workflow. Nested VMs would be a possible solution,
 however, it lacks the good resource utilization.
 
 This figure illustrates the architecture:
 
-![arch](./doc/blktests-ci-architecture.png?raw=true)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./doc/blktests-ci-architecture-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="./doc/blktests-ci-architecture-light.png">
+  <img alt="Fallback image description" src="./doc/blktests-ci-architecture-light.png">
+</picture>
 
 ## Getting started
 ---
@@ -225,18 +229,14 @@ For point 13  (Permissions) please select the following options for Repository
 
 Please always share the token only on a secure channel!
 
-With this token please extract the workflow_id of the workflow in question as
-described on [this page](https://docs.github.com/en/rest/actions/workflows?apiVersion=2022-11-28#list-repository-workflows).
-
-
 Finally, run the following command in the root of this repository and answer the
 prompts to create the runner scale sets:
 ```
 ansible-playbook -i k8s-inventory.yaml playbooks/setup-github-runner-scale-set.yaml
 ```
 
-The two runner scale sets `arc-kernel-builder` and `arc-vm-runner-set` should now
-be visible in the Repo->Settings->Actions->Runners overview.
+The runner scale sets `arc-vm-<repo-name>` should now be visible in the
+Repo->Settings->Actions->Runners overview.
 
 ### Debug help
 ARC listeners can be inspected via `kubectl get pods -n arc-systems`.
@@ -247,12 +247,10 @@ VM templates can be inspected via `kubectl get vmi --all-namespaces`.
 ### Deleting a runner scale set
 
 ```
-helm delete arc-vm-runner-set -n gh-runner-<repo-name>
-helm delete arc-kernel-builder -n gh-runner-<repo-name>
-kubectl delete vm vm-template -n gh-runner-<repo-name>
+helm delete arc-vm-<repo-name> -n gh-runner-<repo-name>
 kubectl delete secret github-config-secret -n gh-runner-<repo-name>
 #Double check that everything is deleted:
-kubectl get all -n gh-runner-<repo-name>
+kubectl api-resources --verbs=list --namespaced -o name  | xargs -n 1 kubectl get --show-kind --ignore-not-found -n gh-runner-<repo-name>
 kubectl delete ns gh-runner-<repo-name>
 ```
 

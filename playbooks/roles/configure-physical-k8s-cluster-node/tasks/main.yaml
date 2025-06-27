@@ -75,3 +75,9 @@
     mode: 0644
   notify: Reboot the cluster machine
 
+- name: Increase limits for inotify watches
+  become: yes
+  shell: |
+    sudo sysctl -w fs.inotify.max_user_watches=2099999999
+    sudo sysctl -w fs.inotify.max_user_instances=2099999999
+    sudo sysctl -w fs.inotify.max_queued_events=2099999999

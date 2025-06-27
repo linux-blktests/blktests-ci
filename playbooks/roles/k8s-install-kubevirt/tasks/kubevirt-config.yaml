@@ -12,6 +12,8 @@ metadata:
   namespace: kubevirt
 spec:
   configuration:
+    commonInstancetypesDeployment:
+      enabled: true
     developerConfiguration:
       featureGates:
         - ExpandDisks

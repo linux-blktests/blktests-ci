@@ -15,9 +15,6 @@
     - name: github_config_url
       prompt: GitHub repo URL that the runner set should serve
       private: false
-    - name: github_workflow_id
-      prompt: GitHub workflow id that the runner set should serve. Get this id via https://docs.github.com/en/rest/actions/workflows?apiVersion=2022-11-28#list-repository-workflows
-      private: false
     - name: github_token
       prompt: GitHub token
       private: false

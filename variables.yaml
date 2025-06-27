@@ -34,7 +34,7 @@ kubevirt_actions_runner_repo: "https://github.com/MaisenbacherD/kubevirt-actions
 kubevirt_actions_runner_repo_branch: "on-demand-kernel"
 
 #private_container_registry
-private_container_registry_size: "1000Gi"
+private_container_registry_size: "800Gi"
 
 #The following vars are defined in `secrets.enc`:
 #longhorn_ui_auth_user

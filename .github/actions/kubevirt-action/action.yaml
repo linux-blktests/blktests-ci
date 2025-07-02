@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+name: "KubeVirt action"
+description: "Spwaning a KubeVirt VM in your k8s cluster via ARC"
+author: "Dennis Maisenbacher"
+inputs:
+  kernel_version:
+    description: "Linux kernel version that the VM should startup with."
+    required: true
+  run_cmds:
+    description: "Commands that should be executed within the VM"
+    required: true
+
+outputs:
+  stdout:
+    description: "stdout of the entrypoint including the executing run_cmds"
+    value: ${{ steps.entrypoint.outputs.stdout }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set GitHub Path
+      run: echo "$GITHUB_ACTION_PATH" >> $GITHUB_PATH
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+    - id: entrypoint
+      name: Run entrypoint.sh
+      run: ${GITHUB_ACTION_PATH}/entrypoint.sh
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        INPUT_KERNEL_VERSION: ${{ inputs.kernel_version }}
+        INPUT_RUN_CMDS: ${{ inputs.run_cmds }}
+    - name: VM cleanup
+      shell: bash
+      run: |
+        ./kubectl delete -f vm.yml
+      if: ${{ always() }}
+
+branding:
+  icon: "monitor"
+  color: "gray-dark"

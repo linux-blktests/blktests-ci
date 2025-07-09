@@ -5,8 +5,10 @@
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
 
+#TODO: use dind container that has kubectl and virtctl preinstalled
 set -e
 set -x
+source vars.sh
 sudo apt-get update
 sudo apt-get -y install curl j2cli
 
@@ -24,15 +26,12 @@ sudo chmod +x virtctl
 ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
 export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
 export kernel_version=$INPUT_KERNEL_VERSION
-export vm_name="vm-runner-${GITHUB_JOB}-${GITHUB_RUN_ID}"
 
 j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
 ./kubectl create -f vm.yml
 ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
 #TODO: capture VM console in a log
 #./virtctl console ${vm_name} | tee -a vm_console_output.log
-ssh_options=(--identity-file=$(realpath ./identity | xargs) --local-ssh --local-ssh-opts="-o StrictHostKeyChecking=no")
-vm_user=fedora
 while true; do
   echo "Waiting for VM to be up and running"
   ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break

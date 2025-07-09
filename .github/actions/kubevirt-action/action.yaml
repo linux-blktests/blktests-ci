@@ -14,6 +14,9 @@ inputs:
   run_cmds:
     description: "Commands that should be executed within the VM"
     required: true
+  vm_artifact_upload_dir:
+    description: "VM directory of artifacts to upload"
+    required: false
 
 outputs:
   stdout:
@@ -36,6 +39,19 @@ runs:
         GITHUB_ACTION_PATH: ${{ github.action_path }}
         INPUT_KERNEL_VERSION: ${{ inputs.kernel_version }}
         INPUT_RUN_CMDS: ${{ inputs.run_cmds }}
+    - name: scp artifacts from VM to runner pod
+      shell: bash
+      run: |
+        source vars.sh
+        mkdir artifacts
+        ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${{ inputs.vm_artifact_upload_dir }} artifacts
+      if: ${{ inputs.vm_artifact_upload_dir != '' }}
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        path: |
+          ./artifacts
+      if: ${{ inputs.vm_artifact_upload_dir != '' }}
     - name: VM cleanup
       shell: bash
       run: |

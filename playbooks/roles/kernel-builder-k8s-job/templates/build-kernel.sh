@@ -43,13 +43,17 @@ yes "" | make olddefconfig
 ./scripts/config --enable CONFIG_VIRTIO_FS
 ./scripts/config --enable CONFIG_IKCONFIG
 ./scripts/config --enable CONFIG_IKCONFIG_PROC
-./scripts/config --enable CONFIG_BLK_DEV_NULL_BLK
+./scripts/config --module CONFIG_BLK_DEV_NULL_BLK
 ./scripts/config --enable CONFIG_BLK_DEV_ZONED
 ./scripts/config --enable CONFIG_F2FS_FS
 ./scripts/config --enable CONFIG_KASAN
 ./scripts/config --enable CONFIG_PROVE_LOCKING
 ./scripts/config --enable CONFIG_DEBUG_KERNEL
 ./scripts/config --enable CONFIG_LOCK_DEBUGGING_SUPPORT
+./scripts/config --enable CONFIG_DEBUG_FS
+./scripts/config --enable CONFIG_BLK_DEBUG_FS
+./scripts/config --enable CONFIG_TARGET_DEBUG_FS
+./scripts/config --enable CONFIG_DEBUG_ATOMIC_SLEEP
 # Build in CONFIG_IP_NF_IPTABLES for podman
 # https://github.com/microsoft/WSL/issues/12108
 ./scripts/config --enable CONFIG_IP_NF_IPTABLES

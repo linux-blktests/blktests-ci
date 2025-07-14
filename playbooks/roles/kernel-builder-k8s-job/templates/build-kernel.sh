@@ -53,7 +53,11 @@ yes "" | make olddefconfig
 ./scripts/config --enable CONFIG_DEBUG_FS
 ./scripts/config --enable CONFIG_BLK_DEBUG_FS
 ./scripts/config --enable CONFIG_TARGET_DEBUG_FS
+./scripts/config --enable CONFIG_NVME_TARGET_DEBUGFS
 ./scripts/config --enable CONFIG_DEBUG_ATOMIC_SLEEP
+./scripts/config --enable CONFIG_FAULT_INJECTION
+./scripts/config --enable CONFIG_FAULT_INJECTION_DEBUG_FS
+./scripts/config --enable CONFIG_BLK_DEV_NULL_BLK_FAULT_INJECTION
 # Build in CONFIG_IP_NF_IPTABLES for podman
 # https://github.com/microsoft/WSL/issues/12108
 ./scripts/config --enable CONFIG_IP_NF_IPTABLES

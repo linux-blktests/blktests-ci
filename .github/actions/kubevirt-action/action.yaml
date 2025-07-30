@@ -45,13 +45,13 @@ runs:
         source vars.sh
         mkdir artifacts
         ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${{ inputs.vm_artifact_upload_dir }} artifacts
-      if: ${{ inputs.vm_artifact_upload_dir != '' }}
+      if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         path: |
           ./artifacts
-      if: ${{ inputs.vm_artifact_upload_dir != '' }}
+      if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}
     - name: VM cleanup
       shell: bash
       run: |

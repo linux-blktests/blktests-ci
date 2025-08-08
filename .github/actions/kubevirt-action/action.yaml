@@ -43,12 +43,20 @@ runs:
       shell: bash
       run: |
         source vars.sh
+        rm -rf artifacts
         mkdir artifacts
         ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${{ inputs.vm_artifact_upload_dir }} artifacts
+      if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}
+    - name: Create timestamp env var
+      shell: bash
+      run: |
+        ts=$(date +'%Y%m%d-%H%M%S')
+        echo "TS=$ts" >> $GITHUB_ENV
       if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
+        name: artifact-${{ env.TS }}
         path: |
           ./artifacts
       if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}

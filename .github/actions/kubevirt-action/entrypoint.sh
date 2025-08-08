@@ -23,7 +23,9 @@ KUBEVIRT_VERSION=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=js
 curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64
 sudo chmod +x virtctl
 
-ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
+if [ ! -f ./identity ]; then
+  ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
+fi
 export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
 export kernel_version=$INPUT_KERNEL_VERSION
 

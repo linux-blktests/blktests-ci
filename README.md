@@ -202,7 +202,8 @@ We need to generate a new fine-grained personal access token for the repository
 or organization, to allow the runner to pick up and process GitHub actions.
 
 Follow the steps from [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
-and make the following least privilege choices:
+and make the following least privilege choices (The token must be generated
+within the personal settings while selecting the correct `Resource owner`):
 
 ```
 For point 7   (Expiration) please select "No expiration" or the longest period

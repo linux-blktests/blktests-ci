@@ -74,6 +74,7 @@
   kubernetes.core.k8s:
     state: present
     src: ~/tmp-ansible/kubemacpool.yaml
+  when: install_kubemacpool is defined
 
 # Install KubeVirt CDI
 - name: "Install KubeVirt CDI operator for VM image repository"

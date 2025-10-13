@@ -23,6 +23,7 @@ kubevirt_version: "v1.4.0"
 kubevirt_cri_version: "v1.61.1"
 
 #Networking
+#Kubemacpool is only installed when `install_kubemacpool` is defined
 kubemacpool_version: "v0.46.0"
 kubemacpool_range_start: "02:23:8d:00:00:00"
 kubemacpool_range_end: "02:23:8d:FF:FF:FF"

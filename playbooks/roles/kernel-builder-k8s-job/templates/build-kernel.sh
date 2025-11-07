@@ -61,6 +61,7 @@ yes "" | make olddefconfig
 ./scripts/config --enable CONFIG_FAIL_MAKE_REQUEST
 ./scripts/config --set-val CONFIG_LOCKDEP_BITS 21
 ./scripts/config --set-val CONFIG_LOCKDEP_CHAINS_BITS 21
+./scripts/config --set-val CONFIG_LOCKDEP_STACK_TRACE_BITS 21
 # Build in CONFIG_IP_NF_IPTABLES for podman
 # https://github.com/microsoft/WSL/issues/12108
 ./scripts/config --enable CONFIG_IP_NF_IPTABLES

@@ -7,7 +7,7 @@
 
 function install_requirements() {
   sudo apt-get update
-  sudo apt-get -y install curl j2cli unzip
+  sudo apt-get -y install curl j2cli unzip file
 
   # Install stable kubectl, query kubernetes server version and install compatible kubectl version
   curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
@@ -54,6 +54,37 @@ function extract_test_artifacts_for_upload() {
   ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
 }
 
+function extract_kernel_artifacts() {
+  # We allow this step to fail, as we don't want to upload the kernel
+  # artifacts multiple times in the same job.
+  export kernel_version="${INPUT_KERNEL_VERSION}"
+  dir="${HOME}/kernel-artifacts"
+  if [[ -d "$dir" ]]; then
+    if ls ${dir}/boot | grep ${kernel_version}; then
+      echo "Kernel artifacts already extracted. Skipping..."
+      exit 1
+    fi
+  else
+    mkdir $dir
+  fi
+
+  mkdir -p tmp
+  cd tmp
+  # Extracting the /boot directory from the container disk.
+  # This containerdisk only contains this directory, so the image can't
+  # be run as a container for extracting the kernel artifacts.
+  docker pull registry-service.docker-registry.svc.cluster.local/linux-kernel-containerdisk:${kernel_version}
+  docker save registry-service.docker-registry.svc.cluster.local/linux-kernel-containerdisk:${kernel_version} > tmp-containerdisk.tar
+  tar -xf tmp-containerdisk.tar
+  cd blobs/sha256
+  for f in *; do
+    if file "$f" | grep -q "POSIX tar archive"; then
+      tar -xf "$f" -C $dir
+    fi
+  done
+  cd ~
+}
+
 function cleanup_vm() {
   ./kubectl delete -f vm.yml
 }
@@ -72,6 +103,9 @@ case $1 in
     ;;
   extract_test_artifacts_for_upload)
     extract_test_artifacts_for_upload $2
+    ;;
+  extract_kernel_artifacts)
+    extract_kernel_artifacts
     ;;
   cleanup_vm)
     cleanup_vm

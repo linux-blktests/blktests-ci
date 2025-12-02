@@ -64,6 +64,22 @@ runs:
         path: |
           ./artifacts
       if: ${{ steps.extract_artifact.outcome == 'success' }}
+    - name: Unpack kernel artifacts from VM to runner pod
+      id: unpack
+      continue-on-error: true
+      run: ${GITHUB_ACTION_PATH}/entrypoint.sh extract_kernel_artifacts
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        INPUT_KERNEL_VERSION: ${{ inputs.kernel_version }}
+      if: ${{ always() }}
+    - name: Upload kernel artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-artifact-${{ inputs.kernel_version }}-${{ env.TS }}
+        path: |
+          ~/kernel-artifacts
+      if: ${{ steps.unpack.outcome == 'success' }}
     - name: VM cleanup
       shell: bash
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh cleanup_vm

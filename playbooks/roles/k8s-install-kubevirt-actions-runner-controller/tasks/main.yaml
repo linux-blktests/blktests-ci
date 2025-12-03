@@ -6,6 +6,11 @@
 
 - include_vars: ../../../../variables.yaml
 
+- name: "Install kubernetes python package"
+  pip:
+    name: kubernetes
+    state: present
+
 - name: "Ensure the gh-runner-{{ runner_set_name }} namespace exists"
   kubernetes.core.k8s:
     name: gh-runner-{{ runner_set_name }}

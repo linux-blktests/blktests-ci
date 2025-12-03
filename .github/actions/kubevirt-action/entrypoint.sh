@@ -19,6 +19,9 @@ function install_requirements() {
   KUBEVIRT_VERSION=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath="{.status.observedKubeVirtVersion}")
   curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64
   sudo chmod +x virtctl
+
+  curl -L -o logcli-linux-amd64.zip https://github.com/grafana/loki/releases/download/v3.6.2/logcli-linux-amd64.zip
+  unzip -o logcli-linux-amd64.zip
 }
 
 function run_ssh_cmds() {
@@ -31,8 +34,6 @@ function run_ssh_cmds() {
   j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
   ./kubectl create -f vm.yml
   ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
-  #TODO: capture VM console in a log
-  #./virtctl console ${vm_name} | tee -a vm_console_output.log
   while true; do
     echo "Waiting for VM to be up and running"
     ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
@@ -85,6 +86,15 @@ function extract_kernel_artifacts() {
   cd ~
 }
 
+function extract_dmesg_logs() {
+  rm -rf dmesg-logs
+  mkdir dmesg-logs
+  ./kubectl describe vmi $vm_name > ./dmesg-logs/vmi-description.log
+  log_pod_name=$(./kubectl describe vmi $vm_name | grep -o "virt-launcher-${vm_name}-[^ ]*" | xargs)
+  since_time=$(./kubectl describe vmi $vm_name | grep "virt-launcher-${vm_name}-[^ ]*" | awk '{print $3}' | xargs)
+  ./logcli-linux-amd64 --addr=http://loki.logging.svc.cluster.local:3100 query "{container=\"guest-console-log\", pod=\"${log_pod_name}\"}" --limit=0 --since=${since_time} > ./dmesg-logs/dmesg.log
+}
+
 function cleanup_vm() {
   ./kubectl delete -f vm.yml
 }
@@ -106,6 +116,9 @@ case $1 in
     ;;
   extract_kernel_artifacts)
     extract_kernel_artifacts
+    ;;
+  extract_dmesg_logs)
+    extract_dmesg_logs
     ;;
   cleanup_vm)
     cleanup_vm

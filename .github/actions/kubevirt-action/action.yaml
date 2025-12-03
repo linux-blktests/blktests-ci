@@ -64,6 +64,20 @@ runs:
         path: |
           ./artifacts
       if: ${{ steps.extract_artifact.outcome == 'success' }}
+    - name: Extract dmesg logs from VM
+      id: extract_dmesg
+      run: ${GITHUB_ACTION_PATH}/entrypoint.sh extract_dmesg_logs
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      if: ${{ always() }}
+    - name: Upload dmesg logs
+      uses: actions/upload-artifact@v4
+      with:
+        name: dmesg-logs-${{ env.TS }}
+        path: |
+          ./dmesg-logs
+      if: ${{ steps.extract_dmesg.outcome == 'success' }}
     - name: Unpack kernel artifacts from VM to runner pod
       id: unpack
       continue-on-error: true

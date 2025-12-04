@@ -5,40 +5,79 @@
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
 
+function install_requirements() {
+  sudo apt-get update
+  sudo apt-get -y install curl j2cli unzip
+
+  # Install stable kubectl, query kubernetes server version and install compatible kubectl version
+  curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+  sudo chmod +x kubectl
+  KUBE_SERVER_VERSION=$(./kubectl version -o json 2> /dev/null | jq -r '.serverVersion.gitVersion' | sed -E 's/^((v[0-9]+\.[0-9]+\.[0-9]+)).*/\1/')
+  curl -LO "https://dl.k8s.io/release/${KUBE_SERVER_VERSION}/bin/linux/amd64/kubectl"
+  sudo chmod +x kubectl
+
+  KUBEVIRT_VERSION=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath="{.status.observedKubeVirtVersion}")
+  curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64
+  sudo chmod +x virtctl
+}
+
+function run_ssh_cmds() {
+  if [ ! -f ./identity ]; then
+    ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
+  fi
+  export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
+  export kernel_version=$INPUT_KERNEL_VERSION
+
+  j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
+  ./kubectl create -f vm.yml
+  ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
+  #TODO: capture VM console in a log
+  #./virtctl console ${vm_name} | tee -a vm_console_output.log
+  while true; do
+    echo "Waiting for VM to be up and running"
+    ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
+    sleep 10
+  done
+
+  run_cmds=$INPUT_RUN_CMDS
+  ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
+}
+
+function extract_test_artifacts_for_upload() {
+  if [ -z "$1" ]; then
+    echo "Error: The VM directory to upload must be specified."
+    return 1
+  fi
+  vm_artifact_upload_dir=$1
+  rm -rf artifacts
+  mkdir artifacts
+  ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
+}
+
+function cleanup_vm() {
+  ./kubectl delete -f vm.yml
+}
+
 #TODO: use dind container that has kubectl and virtctl preinstalled
 set -e
 set -x
 source vars.sh
-sudo apt-get update
-sudo apt-get -y install curl j2cli
 
-# Install stable kubectl, query kubernetes server version and install compatible kubectl version
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo chmod +x kubectl
-KUBE_SERVER_VERSION=$(./kubectl version -o json 2> /dev/null | jq -r '.serverVersion.gitVersion' | sed -E 's/^((v[0-9]+\.[0-9]+\.[0-9]+)).*/\1/')
-curl -LO "https://dl.k8s.io/release/${KUBE_SERVER_VERSION}/bin/linux/amd64/kubectl"
-sudo chmod +x kubectl
-
-KUBEVIRT_VERSION=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath="{.status.observedKubeVirtVersion}")
-curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64
-sudo chmod +x virtctl
-
-if [ ! -f ./identity ]; then
-  ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
-fi
-export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
-export kernel_version=$INPUT_KERNEL_VERSION
-
-j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
-./kubectl create -f vm.yml
-./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
-#TODO: capture VM console in a log
-#./virtctl console ${vm_name} | tee -a vm_console_output.log
-while true; do
-  echo "Waiting for VM to be up and running"
-  ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
-  sleep 10
-done
-
-run_cmds=$INPUT_RUN_CMDS
-./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
+case $1 in
+  install_requirements)
+    install_requirements
+    ;;
+  run_ssh_cmds)
+    run_ssh_cmds
+    ;;
+  extract_test_artifacts_for_upload)
+    extract_test_artifacts_for_upload $2
+    ;;
+  cleanup_vm)
+    cleanup_vm
+    ;;
+  *)
+    echo "Unknown action $1"
+    exit 1
+    ;;
+esac

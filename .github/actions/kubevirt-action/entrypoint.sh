@@ -17,7 +17,7 @@ function install_requirements() {
   sudo chmod +x kubectl
 
   KUBEVIRT_VERSION=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath="{.status.observedKubeVirtVersion}")
-  curl -L -o virtctl https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64
+  curl -L -o virtctl "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64"
   sudo chmod +x virtctl
 
   curl -L -o logcli-linux-amd64.zip https://github.com/grafana/loki/releases/download/v3.6.2/logcli-linux-amd64.zip
@@ -29,7 +29,7 @@ function run_ssh_cmds() {
     ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
   fi
   export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
-  export kernel_version=$INPUT_KERNEL_VERSION
+  export kernel_version="${INPUT_KERNEL_VERSION}"
 
   j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
   ./kubectl create -f vm.yml
@@ -40,7 +40,7 @@ function run_ssh_cmds() {
     sleep 10
   done
 
-  run_cmds=$INPUT_RUN_CMDS
+  run_cmds="${INPUT_RUN_CMDS}"
   ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
 }
 
@@ -49,7 +49,7 @@ function extract_test_artifacts_for_upload() {
     echo "Error: The VM directory to upload must be specified."
     return 1
   fi
-  vm_artifact_upload_dir=$1
+  vm_artifact_upload_dir="$1"
   rm -rf artifacts
   mkdir artifacts
   ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
@@ -100,11 +100,10 @@ function cleanup_vm() {
 }
 
 #TODO: use dind container that has kubectl and virtctl preinstalled
-set -e
-set -x
+set -euxo pipefail
 source vars.sh
 
-case $1 in
+case "$1" in
   install_requirements)
     install_requirements
     ;;
@@ -112,7 +111,7 @@ case $1 in
     run_ssh_cmds
     ;;
   extract_test_artifacts_for_upload)
-    extract_test_artifacts_for_upload $2
+    extract_test_artifacts_for_upload "$2"
     ;;
   extract_kernel_artifacts)
     extract_kernel_artifacts

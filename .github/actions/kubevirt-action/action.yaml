@@ -21,7 +21,7 @@ inputs:
 outputs:
   stdout:
     description: "stdout of the run_cmds"
-    value: ${{ steps.run.outputs.stdout }}
+    value: "${{ steps.run.outputs.stdout }}"
 
 runs:
   using: "composite"
@@ -30,20 +30,20 @@ runs:
       run: echo "$GITHUB_ACTION_PATH" >> $GITHUB_PATH
       shell: bash
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
     - name: Install required tools
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh install_requirements
       shell: bash
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
     - id: run
       name: Run cmds in VM
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh run_ssh_cmds
       shell: bash
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
-        INPUT_KERNEL_VERSION: ${{ inputs.kernel_version }}
-        INPUT_RUN_CMDS: ${{ inputs.run_cmds }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
+        INPUT_KERNEL_VERSION: "${{ inputs.kernel_version }}"
+        INPUT_RUN_CMDS: "${{ inputs.run_cmds }}"
     - name: Create timestamp env var for artifact uploads
       shell: bash
       run: |
@@ -55,7 +55,7 @@ runs:
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh extract_test_artifacts_for_upload "${{ inputs.vm_artifact_upload_dir }}"
       shell: bash
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
       if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -69,12 +69,12 @@ runs:
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh extract_dmesg_logs
       shell: bash
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
       if: ${{ always() }}
     - name: Upload dmesg logs
       uses: actions/upload-artifact@v4
       with:
-        name: dmesg-logs-${{ env.TS }}
+        name: "dmesg-logs-${{ env.TS }}"
         path: |
           ./dmesg-logs
       if: ${{ steps.extract_dmesg.outcome == 'success' }}
@@ -84,13 +84,13 @@ runs:
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh extract_kernel_artifacts
       shell: bash
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
-        INPUT_KERNEL_VERSION: ${{ inputs.kernel_version }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
+        INPUT_KERNEL_VERSION: "${{ inputs.kernel_version }}"
       if: ${{ always() }}
     - name: Upload kernel artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-artifact-${{ inputs.kernel_version }}-${{ env.TS }}
+        name: "kernel-artifact-${{ inputs.kernel_version }}-${{ env.TS }}"
         path: |
           ~/kernel-artifacts
       if: ${{ steps.unpack.outcome == 'success' }}
@@ -98,7 +98,7 @@ runs:
       shell: bash
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh cleanup_vm
       env:
-        GITHUB_ACTION_PATH: ${{ github.action_path }}
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
       if: ${{ always() }}
 
 branding:

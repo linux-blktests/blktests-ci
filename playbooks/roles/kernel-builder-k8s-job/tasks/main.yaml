@@ -3,6 +3,10 @@
 # Copyright (c) 2025 Western Digital Corporation or its affiliates.
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+- name: "Install kubernetes python package"
+  pip:
+    name: kubernetes
+    state: present
 
 - name: "Ensure the gh-runner-kernel-builder namespace exists"
   kubernetes.core.k8s:

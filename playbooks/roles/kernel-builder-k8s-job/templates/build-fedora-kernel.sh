@@ -10,7 +10,7 @@ set -x
 dockerd --host=unix:///var/run/docker.sock --group=123 &
 KERNEL_TREE=https://github.com/torvalds/linux
 KERNEL_REF=master
-KERNEL_TAG_OVERWRITE=linux-master
+KERNEL_TAG_OVERWRITE=linus-master
 docker build \
   --build-arg KERNEL_TREE=${KERNEL_TREE} \
   --build-arg KERNEL_REF=${KERNEL_REF} \

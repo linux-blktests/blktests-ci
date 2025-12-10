@@ -11,22 +11,31 @@
     name: kubernetes
     state: present
 
+- name: "Ensure ~/tmp-ansible exists for deployment files"
+  file:
+    path: "~/tmp-ansible"
+    state: directory
+
+- name: Download kubevirt deployment files
+  shell: |
+    wget -P ~/tmp-ansible https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/kubevirt-operator.yaml
+    wget -P ~/tmp-ansible https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/kubevirt-cr.yaml
+
 - name: "Install KubeVirt operator"
   kubernetes.core.k8s:
     state: present
-    src: https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/kubevirt-operator.yaml
+    src: ~/tmp-ansible/kubevirt-operator.yaml
 
 - name: "Install KubeVirt custom resource"
   kubernetes.core.k8s:
     state: present
-    src: https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/kubevirt-cr.yaml
+    src: ~/tmp-ansible/kubevirt-cr.yaml
 
 - name: "Install Virtctl"
   become: yes
-  get_url:
-    url: https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/virtctl-{{ kubevirt_version }}-linux-amd64
-    dest: /usr/local/bin/virtctl
-    mode: 0755
+  shell: |
+    wget -O /usr/local/bin/virtctl https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/virtctl-{{ kubevirt_version }}-linux-amd64
+    chmod 0755 /usr/local/bin/virtctl
 
 - name: "Wait for KubeVirt components to become ready"
   shell: |
@@ -54,12 +63,17 @@
   shell: "kubectl wait --namespace=kubevirt --for=jsonpath='{.status.phase}'=Deployed kubevirt.kubevirt.io/kubevirt --all --timeout=1200s"
 
 # Install KubeVirt CDI
+- name: Download kubevirt CDI deployment files
+  shell: |
+    wget -P ~/tmp-ansible https://github.com/kubevirt/containerized-data-importer/releases/download/{{ kubevirt_cri_version }}/cdi-operator.yaml
+    wget -P ~/tmp-ansible https://github.com/kubevirt/containerized-data-importer/releases/download/{{ kubevirt_cri_version }}/cdi-cr.yaml
+
 - name: "Install KubeVirt CDI operator for VM image repository"
   kubernetes.core.k8s:
     state: present
-    src: https://github.com/kubevirt/containerized-data-importer/releases/download/{{ kubevirt_cri_version }}/cdi-operator.yaml
+    src: ~/tmp-ansible/cdi-operator.yaml
 
 - name: "Install KubeVirt CDI custom resource for VM image repository"
   kubernetes.core.k8s:
     state: present
-    src: https://github.com/kubevirt/containerized-data-importer/releases/download/{{ kubevirt_cri_version }}/cdi-cr.yaml
+    src: ~/tmp-ansible/cdi-cr.yaml

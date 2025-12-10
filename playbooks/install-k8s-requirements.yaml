@@ -18,6 +18,16 @@
     - include_vars: ../variables.yaml
     - include_vars: ../secrets.enc
 
+    - name: "Install kubernetes python package"
+      pip:
+        name: kubernetes
+        state: present
+
+    - name: "Ensure ~/tmp-ansible exists for deployment files"
+      file:
+        path: "~/tmp-ansible"
+        state: directory
+
     - name: "Wait until Kubernetes cluster is up and running again (in case of reboot)"
       command: kubectl get nodes --no-headers
       register: kubernetes_nodes_final
@@ -50,10 +60,14 @@
         EOF
 
     #https://github.com/k8snetworkplumbingwg/sriov-cni
+    - name: Download sriov-cni-daemonset
+      shell: |
+        wget -P ~/tmp-ansible https://raw.githubusercontent.com/k8snetworkplumbingwg/sriov-cni/refs/tags/{{ sriovcni_version }}/images/sriov-cni-daemonset.yaml
+
     - name: "Install sriov-cni"
       kubernetes.core.k8s:
         state: present
-        src: https://raw.githubusercontent.com/k8snetworkplumbingwg/sriov-cni/refs/tags/{{ sriovcni_version }}/images/sriov-cni-daemonset.yaml
+        src: ~/tmp-ansible/sriov-cni-daemonset.yaml
 
     #https://github.com/k8snetworkplumbingwg/sriov-network-device-plugin?tab=readme-ov-file#install-sr-iov-network-device-plugin
     #Derived from https://github.com/k8snetworkplumbingwg/sriov-network-device-plugin/blob/master/deployments/configMap.yaml
@@ -81,10 +95,14 @@
             }
         EOF
 
+    - name: Download sriov-network-device-plugin
+      shell: |
+        wget -P ~/tmp-ansible https://raw.githubusercontent.com/k8snetworkplumbingwg/sriov-network-device-plugin/refs/tags/{{ sriovnetworkdeviceplugin_version }}/deployments/sriovdp-daemonset.yaml
+
     - name: "Install sriov-network-device-plugin daemonset"
       kubernetes.core.k8s:
         state: present
-        src: https://raw.githubusercontent.com/k8snetworkplumbingwg/sriov-network-device-plugin/refs/tags/{{ sriovnetworkdeviceplugin_version }}/deployments/sriovdp-daemonset.yaml
+        src: ~/tmp-ansible/sriovdp-daemonset.yaml
 
     - name: "Configure multus network-attachment-definition"
       shell: |

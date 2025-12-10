@@ -82,26 +82,12 @@ node-ips.
 The bare metal OS installation on the cluster nodes is out of scope of this
 project. One could use Proxmox or similar software.
 
-Now is a great time to check on the cluster nodes that the
-NVIDIA® Mellanox® ConnectX®-6 Dx SmartNIC and all PCIe devices that shall be
-passed to KubeVirt VMs (for CI testing) are rebound to the vfio driver on
-every startup (e.g. through kernel arguments).
-
----
-
-#### 📝TODO
-
-- Improve scripts by making any SmartNIC a configurable `variables.yaml` entry
-  instead of hard coding in
-  `playbook/roles/configure-physical-k8s-cluster-node/tasks/enp129s0f0np0.rules`
-  and
-  `playbook/install-k8s-requirements.yaml`
-  (sriov and multus config)
-
----
+Now is a great time to check on the cluster nodes that all PCIe devices that
+shall be passed to KubeVirt VMs (for CI testing) are rebound to the vfio
+driver on every startup (e.g. through kernel arguments).
 
 Next make sure to adjust the `kubevirt-config.yaml` to define the same PCIe
-devices from last step (besides the SmartNIC) in `pciHostDevices`:
+devices from last step in `pciHostDevices`:
 `playbook/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`
 
 ---

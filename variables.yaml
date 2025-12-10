@@ -22,14 +22,6 @@ prometheus_helm_chart_url: "https://prometheus-community.github.io/helm-charts"
 kubevirt_version: "v1.4.0"
 kubevirt_cri_version: "v1.61.1"
 
-#Networking
-#Kubemacpool is only installed when `install_kubemacpool` is defined
-kubemacpool_version: "v0.46.0"
-kubemacpool_range_start: "02:23:8d:00:00:00"
-kubemacpool_range_end: "02:23:8d:FF:FF:FF"
-sriovcni_version: "v2.9.0"
-sriovnetworkdeviceplugin_version: "v3.9.0"
-
 #gha-runner-scale-set
 gha_rss_version: "0.12.1"
 

@@ -53,29 +53,6 @@
 - name: "Wait for KubeVirt deployment to become ready"
   shell: "kubectl wait --namespace=kubevirt --for=jsonpath='{.status.phase}'=Deployed kubevirt.kubevirt.io/kubevirt --all --timeout=1200s"
 
-- name: "Download kubemacpool - kubemacpool is responsible for supplying an individual MAC address and therefore an individual IP for sriov network interfaces"
-  get_url:
-    url: https://raw.githubusercontent.com/k8snetworkplumbingwg/kubemacpool/{{ kubemacpool_version }}/config/release/kubemacpool.yaml
-    dest: ~/tmp-ansible/kubemacpool.yaml
-
-- name: "Set the MAC address range start for kubemacpool"
-  replace:
-    path: ~/tmp-ansible/kubemacpool.yaml
-    regexp: '02:00:00:00:00:00'
-    replace: "{{ kubemacpool_range_start }}"
-
-- name: "Set the MAC address range end for kubemacpool"
-  replace:
-    path: ~/tmp-ansible/kubemacpool.yaml
-    regexp: '02:FF:FF:FF:FF:FF'
-    replace: "{{ kubemacpool_range_end }}"
-
-- name: "Install kubemacpool"
-  kubernetes.core.k8s:
-    state: present
-    src: ~/tmp-ansible/kubemacpool.yaml
-  when: install_kubemacpool is defined
-
 # Install KubeVirt CDI
 - name: "Install KubeVirt CDI operator for VM image repository"
   kubernetes.core.k8s:

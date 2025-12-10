@@ -57,12 +57,13 @@ The following tools need to be installed on the machine you want to orchestrate
 your cluster from. This machine will be referred to as 'workstation' from now
 on.
 
-- Python
+- Python3 and Python3-pip
 - Ansible
 - Docker (or Podman in combination with podman-docker)
 - kubectl
 - helm
 - virtctl (version must match with definition in `variables.yaml`)
+  (eg. [via the official release](https://kubevirt.io/user-guide/user_workloads/virtctl_client_tool/))
 
 The workstation needs network access to the cluster nodes.
 

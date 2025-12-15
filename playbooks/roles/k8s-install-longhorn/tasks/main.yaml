@@ -82,29 +82,40 @@
     dest: ~/tmp-ansible/external-snapshotter
     version: "{{ longhorn_external_snapshotter_version }}"
 
-- name: "Kubectl create crd"
-  shell: "kubectl create -k client/config/crd"
-  args:
-    chdir: ~/tmp-ansible/external-snapshotter
+- name: "Apply external snapshotter crd"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ item }}"
+  loop: >-
+    {{
+      lookup('fileglob', '~/tmp-ansible/external-snapshotter/client/config/crd/*snapshot*.y*ml', wantlist=True)
+      | map('expanduser') | list
+    }}
 
-- name: "Kubectl create snapshot-controller"
-  shell: "kubectl create -k deploy/kubernetes/snapshot-controller"
-  args:
-    chdir: ~/tmp-ansible/external-snapshotter
+
+- name: "Apply snapshot-controller"
+  kubernetes.core.k8s:
+    state: present
+    src: "{{ item }}"
+  loop: >-
+    {{
+      lookup('fileglob', '~/tmp-ansible/external-snapshotter/deploy/kubernetes/snapshot-controller/*snapshot-controller.y*ml', wantlist=True)
+      | map('expanduser') | list
+    }}
 
 # The parameter type 'bi' is required for kubevirt snapshots
 # https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/csi-volume-snapshot-associated-with-longhorn-backing-image/
 - name: "Create longhorn VolumeSnapshotClass"
-  shell: |
-    cat <<EOF | kubectl apply -f -
-    kind: VolumeSnapshotClass
-    apiVersion: snapshot.storage.k8s.io/v1
-    metadata:
-      name: longhorn
-    driver: driver.longhorn.io
-    deletionPolicy: Delete
-    parameters:
-      type: bi
-      export-type: qcow2
-    EOF
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      kind: VolumeSnapshotClass
+      apiVersion: snapshot.storage.k8s.io/v1
+      metadata:
+        name: longhorn
+      driver: driver.longhorn.io
+      deletionPolicy: Delete
+      parameters:
+        type: bi
+        export-type: qcow2
 

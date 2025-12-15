@@ -7,17 +7,23 @@
 #Requirement: The network card and all PCIe devices that shall be passed to
 #kubevirt VMs must be rebound to vfio on the bare metal deployed OS
 #(eg. through kernel args)
-- name: "Longhorn dependency - Install open-iscsi"
+
+- name: "Load OS specific packages"
+  include_vars: "{{ ansible_os_family }}.yaml"
+
+- name: "Install Longhorn dependency"
   become: yes
   ansible.builtin.package:
-    name: open-iscsi
+    name: "{{ longhorn_package_dependencies }}"
     state: present
 
-- name: "Longhorn dependency - Install nfs"
+- name: "Enable iscsid on RedHat family"
   become: yes
-  ansible.builtin.package:
-    name: nfs-common
-    state: present
+  shell: |
+    echo "InitiatorName=$(/sbin/iscsi-iname)" > /etc/iscsi/initiatorname.iscsi
+    systemctl enable iscsid
+    systemctl start iscsid
+  when: ansible_os_family == "RedHat"
 
 - name: "Longhorn dependency -Disable multipathd service"
   become: yes

@@ -1,0 +1,3 @@
+lognhorn_dependency_packages:
+ - iscsi-initiator-utils
+ - nfs-utils

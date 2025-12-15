@@ -62,7 +62,7 @@
 - name: "Ensure iscsi_tcp module is loaded on boot"
   become: yes
   lineinfile:
-    path: /etc/modules
+    path: "/etc/modprobe.d/iscsi-tcp.conf"
     line: iscsi_tcp
     state: present
 

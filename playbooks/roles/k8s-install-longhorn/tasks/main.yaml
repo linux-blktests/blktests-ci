@@ -82,15 +82,15 @@
     dest: ~/tmp-ansible/external-snapshotter
     version: "{{ longhorn_external_snapshotter_version }}"
 
-- name: "Kubectl create crd"
-  shell: "kubectl create -k client/config/crd"
-  args:
-    chdir: ~/tmp-ansible/external-snapshotter
+- name: "Apply external snapshotter crd"
+  kubernetes.core.k8s:
+    state: present
+    src: ~/tmp-ansible/external-snapshotter/client/config/crd"
 
-- name: "Kubectl create snapshot-controller"
-  shell: "kubectl create -k deploy/kubernetes/snapshot-controller"
-  args:
-    chdir: ~/tmp-ansible/external-snapshotter
+- name: "Apply snapshot-controller"
+  kubernetes.core.k8s:
+    state: present
+    src: ~/tmp-ansible/external-snapshotter/deploy/kubernetes/snapshot-controller"
 
 # The parameter type 'bi' is required for kubevirt snapshots
 # https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/csi-volume-snapshot-associated-with-longhorn-backing-image/

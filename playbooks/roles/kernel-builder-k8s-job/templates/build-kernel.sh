@@ -110,8 +110,8 @@ fi
 source /version/tag
 
 
-cp arch/x86_64/boot/bzImage /output/bzImage-${KERNEL_VERSION}
-chmod 755 /output/bzImage-${KERNEL_VERSION}
+cp vmlinux /output/vmlinux-${KERNEL_VERSION}
+chmod 755 /output/vmlinux-${KERNEL_VERSION}
 
 cp /initramfs.cpio.gz /output/initramfs-${KERNEL_VERSION}.img
 chmod 644 /output/initramfs-${KERNEL_VERSION}.img

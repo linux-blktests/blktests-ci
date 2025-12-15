@@ -22,7 +22,7 @@ spec:
             container:
               image: container-registry.local:5000/linux-kernel-containerdisk:{{ kernel_version }}
               initrdPath: /boot/initramfs-{{ kernel_version }}.img
-              kernelPath: /boot/bzImage-{{ kernel_version }}
+              kernelPath: /boot/vmlinux-{{ kernel_version }}
               imagePullPolicy: Always
             kernelArgs: "loglevel=7 no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root=/dev/vda4 rootflags=subvol=root"
         devices:

@@ -1,0 +1,3 @@
+lognhorn_dependency_packages:
+ - open-iscsi
+ - nfs-common

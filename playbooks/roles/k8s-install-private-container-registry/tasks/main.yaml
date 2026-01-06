@@ -15,6 +15,38 @@
       metadata:
         name: docker-registry
 
+- name: "Create ConfigMap for registry config (allow deletes)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: registry-config
+        namespace: docker-registry
+      data:
+        config.yml: |
+          version: 0.1
+          log:
+            fields:
+              service: registry
+          storage:
+            cache:
+              blobdescriptor: inmemory
+            filesystem:
+              rootdirectory: /var/lib/registry
+            delete:
+              enabled: true
+          http:
+            addr: :5000
+            headers:
+              X-Content-Type-Options: [nosniff]
+          health:
+            storagedriver:
+              enabled: true
+              interval: 10s
+              threshold: 3
+
 - name: "Create PersistentVolumeClaim for container registry"
   kubernetes.core.k8s:
     state: present
@@ -59,10 +91,16 @@
               volumeMounts:
               - name: storage
                 mountPath: /var/lib/registry
+              - name: registry-config
+                mountPath: /etc/docker/registry
+                readOnly: true
             volumes:
             - name: storage
               persistentVolumeClaim:
                 claimName: docker-registry-pvc
+            - name: registry-config
+              configMap:
+                name: registry-config
 
 - name: Expose Docker registry service
   kubernetes.core.k8s:
@@ -82,6 +120,71 @@
             port: 80
             targetPort: 5000
             nodePort: 32000 
+
+- name: Setup service account for docker-registry to list and exec pods
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/docker-registry-rbac.yaml
+
+- name: "Deploy cronjob to delete linux-kernel-containerdisks older than 60 days"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: registry-cleanup
+        namespace: docker-registry
+      spec:
+        schedule: "0 2 * * *" # every day at 02:00
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                serviceAccountName: registry-cleanup-sa
+                restartPolicy: OnFailure
+                containers:
+                - name: cleanup
+                  image: bitnami/kubectl:latest
+                  command:
+                    - /bin/sh
+                    - -c
+                    - |
+                      set -e
+                      REGISTRY_HOST="registry-service.docker-registry.svc.cluster.local:80"
+                      REPOSITORY="linux-kernel-containerdisk"
+                      DAYS=60
+                      NOW=$(date +%s)
+
+                      echo "Fetching tags for $REPOSITORY..."
+                      for tag in $(curl -s -u $USER:$PASS http://$REGISTRY_HOST/v2/$REPOSITORY/tags/list | jq -r '.tags[]'); do
+                        # Get manifest and config digest
+                        manifest=$(curl -s -u $USER:$PASS -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                          http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$tag)
+                        cfg=$(echo "$manifest" | jq -r '.config.digest')
+                        created=$(curl -s -u $USER:$PASS http://$REGISTRY_HOST/v2/$REPOSITORY/blobs/$cfg | jq -r '.created')
+                        if [ -z "$created" ]; then
+                          echo "Skipping $tag (no created date)"
+                          continue
+                        fi
+                        ts=$(date -d "$created" +%s)
+                        age=$(( (NOW - ts) / 86400 ))
+                        if [ $age -gt $DAYS ]; then
+                          digest=$(curl -sI -u $USER:$PASS \
+                            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                            http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$tag \
+                            | awk -F': ' '/Docker-Content-Digest/{print $2}' | tr -d '\r')
+                          echo "Deleting $tag (age: $age days, digest: $digest)"
+                          curl -s -u $USER:$PASS -X DELETE http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$digest
+                        else
+                          echo "Keeping $tag (age: $age days)"
+                        fi
+                      done
+
+                      echo "Running garbage collection..."
+                      POD=$(kubectl get pod -n docker-registry -l app=registry -o jsonpath='{.items[0].metadata.name}')
+                      kubectl exec -n docker-registry $POD -- registry garbage-collect /etc/docker/registry/config.yml
+
 
 # TOOD: on local machine where docker image should be pushed from
 # /etc/docker/daemon.json

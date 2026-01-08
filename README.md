@@ -217,6 +217,24 @@ For point 13  (Permissions) please select the following options for Repository
 
 Please always share the token only on a secure channel!
 
+Configuration required by the GitHub repo that uses the self-hosted runner
+scale set:
+- Optionally: Prevent group of people to allow actions:
+Repo -> Settings -> Actions -> General -> Actions permissions
+- Prevent PR's to execute code on self-hosted runner before getting approved:
+Repo -> Settings -> Actions -> General -> 'Require approval for all outside
+collaborators' -> Save
+- Restrict write access to the repository with the GITHUB_TOKEN:
+Repo -> Settings -> Actions -> General -> 'Read repository content and packages
+permissions' -> Save
+- Preventing GitHub Actions from creating or approving pull requests through the
+GITHUB_TOKEN:
+Repo -> Settings -> Actions -> General -> DISABLE 'Allow GitHub Actions to
+create and approve pull requests' -> Save
+- In reviews watch out for code injection and secret leaks within workflows
+(https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
+In the repository->settings->actions->general->workflow
+
 Finally, run the following command in the root of this repository and answer the
 prompts to create the runner scale sets:
 ```

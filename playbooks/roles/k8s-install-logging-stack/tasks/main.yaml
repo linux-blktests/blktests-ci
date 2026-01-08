@@ -181,7 +181,6 @@
     chart_ref: grafana/grafana
     release_namespace: logging
     create_namespace: true
-    values_files: "{{ role_path }}/templates/grafana-values.yaml"
     values:
       image:
         repository: grafana/grafana

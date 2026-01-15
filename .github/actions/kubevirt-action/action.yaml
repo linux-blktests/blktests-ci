@@ -58,12 +58,12 @@ runs:
         GITHUB_ACTION_PATH: "${{ github.action_path }}"
       if: ${{ always() && inputs.vm_artifact_upload_dir != '' }}
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: artifact-${{ env.TS }}
         path: |
           ./artifacts
-      if: ${{ steps.extract_artifact.outcome == 'success' }}
+      if: ${{ always() && steps.extract_artifact.outcome == 'success' }}
     - name: Extract dmesg logs from VM
       id: extract_dmesg
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh extract_dmesg_logs
@@ -72,12 +72,12 @@ runs:
         GITHUB_ACTION_PATH: "${{ github.action_path }}"
       if: ${{ always() }}
     - name: Upload dmesg logs
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: "dmesg-logs-${{ env.TS }}"
         path: |
           ./dmesg-logs
-      if: ${{ steps.extract_dmesg.outcome == 'success' }}
+      if: ${{ always() && steps.extract_dmesg.outcome == 'success' }}
     - name: Unpack kernel artifacts from VM to runner pod
       id: unpack
       continue-on-error: true
@@ -88,12 +88,12 @@ runs:
         INPUT_KERNEL_VERSION: "${{ inputs.kernel_version }}"
       if: ${{ always() }}
     - name: Upload kernel artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: "kernel-artifact-${{ inputs.kernel_version }}-${{ env.TS }}"
         path: |
           ~/kernel-artifacts
-      if: ${{ steps.unpack.outcome == 'success' }}
+      if: ${{ always() && steps.unpack.outcome == 'success' }}
     - name: VM cleanup
       shell: bash
       run: ${GITHUB_ACTION_PATH}/entrypoint.sh cleanup_vm

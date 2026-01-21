@@ -90,8 +90,8 @@ function extract_dmesg_logs() {
   rm -rf dmesg-logs
   mkdir dmesg-logs
   ./kubectl describe vmi $vm_name > ./dmesg-logs/vmi-description.log
-  log_pod_name=$(./kubectl describe vmi $vm_name | grep -o "virt-launcher-${vm_name}-[^ ]*" | xargs)
-  since_time=$(./kubectl describe vmi $vm_name | grep "virt-launcher-${vm_name}-[^ ]*" | awk '{print $3}' | xargs)
+  log_pod_name=$(./kubectl get pods | grep -o "virt-launcher-${vm_name}-[^ ]*" | xargs)
+  since_time=$(./kubectl get pods | grep "virt-launcher-${vm_name}-[^ ]*" | awk '{print $5}' | xargs)
   ./logcli-linux-amd64 --addr=http://loki.logging.svc.cluster.local:3100 query "{container=\"guest-console-log\", pod=\"${log_pod_name}\"}" --limit=0 --since=${since_time} > ./dmesg-logs/dmesg.log
 }
 

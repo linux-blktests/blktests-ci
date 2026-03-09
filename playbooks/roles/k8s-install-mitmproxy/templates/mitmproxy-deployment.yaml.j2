@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mitmproxy
+  namespace: mitmproxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mitmproxy
+  template:
+    metadata:
+      labels:
+        app: mitmproxy
+    spec:
+      initContainers:
+        - name: init-ca-certs
+          image: mitmproxy/mitmproxy:{{ mitmproxy_version }}
+          command: ["sh", "-c", "cp /ca-secret/* /ca-certs/ && cat /etc/ssl/certs/ca-certificates.crt /corporate-ca/corporate-ca-cert.pem > /ca-certs/upstream-ca-bundle.pem"]
+          volumeMounts:
+            - name: mitmproxy-ca-secret
+              mountPath: /ca-secret
+              readOnly: true
+            - name: ca-certs
+              mountPath: /ca-certs
+            - name: corporate-ca
+              mountPath: /corporate-ca
+              readOnly: true
+      containers:
+        - name: mitmproxy
+          image: mitmproxy/mitmproxy:{{ mitmproxy_version }}
+          command: ["mitmdump"]
+          args:
+            - "--set"
+            - "confdir=/ca-certs"
+            - "--set"
+            - "ssl_verify_upstream_trusted_ca=/ca-certs/upstream-ca-bundle.pem"
+            - "--listen-port"
+            - "8080"
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: ca-certs
+              mountPath: /ca-certs
+            - name: corporate-ca
+              mountPath: /corporate-ca
+              readOnly: true
+      volumes:
+        - name: mitmproxy-ca-secret
+          secret:
+            secretName: mitmproxy-ca
+            items:
+              - key: mitmproxy-ca.pem
+                path: mitmproxy-ca.pem
+              - key: mitmproxy-ca-cert.pem
+                path: mitmproxy-ca-cert.pem
+        - name: ca-certs
+          emptyDir: {}
+        - name: corporate-ca
+          secret:
+            secretName: mitmproxy-ca
+            items:
+              - key: corporate-ca-cert.pem
+                path: corporate-ca-cert.pem

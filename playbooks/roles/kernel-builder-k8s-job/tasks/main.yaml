@@ -15,6 +15,29 @@
     kind: Namespace
     state: present
 
+- name: "Check if mitmproxy is deployed in the cluster"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: mitmproxy-ca-cert
+    namespace: mitmproxy
+  register: mitmproxy_ca_configmap
+
+- name: "Set mitmproxy_enabled fact"
+  set_fact:
+    mitmproxy_enabled: "{{ mitmproxy_ca_configmap.resources | length > 0 }}"
+
+- name: "Copy mitmproxy CA cert ConfigMap to kernel-builder namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mitmproxy-ca-cert
+        namespace: gh-runner-kernel-builder
+      data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
+  when: mitmproxy_enabled
+
 - name: "Get private docker registry IP"
   ansible.builtin.set_fact:
     registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
@@ -45,40 +68,5 @@
 - name: "Create the kernel-builder deployment which requires DinD to push the articts into the private docker registry"
   kubernetes.core.k8s:
     state: present
-    definition:
-      apiVersion: batch/v1
-      kind: CronJob
-      metadata:
-        name: kernel-builder
-        namespace: gh-runner-kernel-builder
-      spec:
-        schedule: "0 5 * * *"
-        jobTemplate:
-          spec:
-            template:
-              spec:
-                containers:
-                - name: builder
-                  image: container-registry.local:5000/kernel-builder-k8s-job:latest
-                  env:
-                    - name: DOCKER_HOST
-                      value: unix:///var/run/docker.sock
-                  resources:
-                    requests:
-                      memory: "8Gi"
-                      cpu: "4"
-                    limits:
-                      memory: "8Gi"
-                      cpu: "4"
-                  securityContext:
-                    privileged: true
-                  volumeMounts:
-                  - name: docker-daemon-config
-                    mountPath: /etc/docker/daemon.json
-                    subPath: daemon.json
-                volumes:
-                - name: docker-daemon-config
-                  configMap:
-                    name: docker-daemon-config
-                restartPolicy: OnFailure
+    template: ../templates/kernel-builder-cronjob.yaml.j2
 

@@ -29,6 +29,8 @@ spec:
           filesystems:
             - name: prepare-nvme-devices
               virtiofs: {}
+            - name: vm-init
+              virtiofs: {}
           disks:
             - name: containerdisk
               disk:
@@ -67,41 +69,20 @@ spec:
         - name: prepare-nvme-devices
           configMap:
             name: prepare-nvme-devices
+        - name: vm-init
+          configMap:
+            name: {{ vm_name }}-cloud-init
         - name: cloudinitdisk
           cloudInitNoCloud:
-            userData: |-
+            userData: |
               #cloud-config
               users:
                 - name: fedora
                   sudo: ["ALL=(ALL) NOPASSWD:ALL"]
                   groups: users, admin, docker, podman
                   ssh_authorized_keys:
-                    {{ vm_ssh_authorized_keys | indent( width=20 ) }}
+                    - {{ vm_ssh_authorized_keys }}
               runcmd:
-                - "sudo mkdir /mnt/prepare-nvme-devices"
-                - "sudo mount -t virtiofs prepare-nvme-devices /mnt/prepare-nvme-devices"
-                - "sudo mkdir /mnt/kernel-modules-disk"
-                - "sudo mount /dev/sr0 /mnt/kernel-modules-disk"
-                - "sudo tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/"
-                - "sudo modprobe tun"
-                - "sudo loginctl enable-linger fedora"
-                - "sudo dnf -y install dnf-plugins-core jq nvme-cli"
-                - "sudo dnf-3 config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo"
-                - "sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-                - "sudo systemctl enable --now docker"
-                - "sudo chown -R fedora: /var/run/docker.sock"
-                - "sudo cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh"
-                - "sudo chmod +x /prepare-nvme-devices.sh"
-                - "sudo /prepare-nvme-devices.sh"
-                - "sudo touch /vm-ready"
-
-#In case you want to use podman instead of docker:
-# - "sudo loginctl enable-linger fedora"
-# - "sudo systemctl enable --now podman.socket"
-# - "sudo chown -R fedora: /var/run/podman/"
-# In case you want to use docker instead of podman:
-# - "sudo loginctl enable-linger fedora"
-# - "sudo dnf -y install dnf-plugins-core jq nvme-cli"
-# - "sudo dnf-3 config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo"
-# - "sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
-# - "sudo systemctl enable --now docker"
+                - "mkdir -p /mnt/vm-init"
+                - "mount -t virtiofs vm-init /mnt/vm-init"
+                - "bash /mnt/vm-init/init.sh"

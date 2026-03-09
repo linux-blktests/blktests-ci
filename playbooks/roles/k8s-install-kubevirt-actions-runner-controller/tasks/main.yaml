@@ -18,6 +18,68 @@
     kind: Namespace
     state: present
 
+- name: "Check if mitmproxy is deployed in the cluster"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: mitmproxy-ca-cert
+    namespace: mitmproxy
+  register: mitmproxy_ca_configmap
+
+- name: "Set mitmproxy_enabled fact"
+  set_fact:
+    mitmproxy_enabled: "{{ mitmproxy_ca_configmap.resources | length > 0 }}"
+
+- name: "Copy mitmproxy CA cert ConfigMap to runner namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mitmproxy-ca-cert
+        namespace: gh-runner-{{ runner_set_name }}
+      data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
+  when: mitmproxy_enabled
+
+- name: "Copy mitmproxy CA cert ConfigMap to arc-systems namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mitmproxy-ca-cert
+        namespace: arc-systems
+      data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
+  when: mitmproxy_enabled
+
+- name: "Set ARC controller proxy values"
+  set_fact:
+    arc_controller_proxy_values:
+      env:
+        - name: HTTP_PROXY
+          value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+        - name: HTTPS_PROXY
+          value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+        - name: NO_PROXY
+          value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+        - name: http_proxy
+          value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+        - name: https_proxy
+          value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+        - name: no_proxy
+          value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+      volumes:
+        - name: mitmproxy-ca-cert
+          configMap:
+            name: mitmproxy-ca-cert
+      volumeMounts:
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
+          readOnly: true
+  when: mitmproxy_enabled
+
 - name: Check if arc package is installed
   shell: helm list -n arc-systems -q | grep -w arc
   register: arc_installed
@@ -31,6 +93,7 @@
     create_namespace: true
     chart_version: "{{ gha_rss_version }}"
     chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
+    values: "{{ arc_controller_proxy_values | default({}) }}"
   when: arc_installed.rc != 0
 
 - name: "Create Kubernetes secret for the github_token of {{ runner_set_name }}"

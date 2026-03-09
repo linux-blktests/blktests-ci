@@ -1,0 +1,67 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+set -ex
+
+{% if mitmproxy_ca_cert is defined and mitmproxy_ca_cert %}
+cat > /etc/profile.d/proxy.sh << 'EOF'
+export HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+export HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+export NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+export http_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+export https_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+export no_proxy=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+EOF
+source /etc/profile.d/proxy.sh
+
+cat >> /etc/environment << 'EOF'
+HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+http_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+https_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+no_proxy=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+EOF
+
+cat >> /etc/dnf/dnf.conf << 'EOF'
+proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+EOF
+
+mkdir -p /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/proxy.conf << 'EOF'
+[Service]
+Environment="HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+Environment="HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+Environment="NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+EOF
+
+cat > /etc/pki/ca-trust/source/anchors/mitmproxy-ca-cert.pem << 'CERT'
+{{ mitmproxy_ca_cert }}
+CERT
+update-ca-trust
+{% endif %}
+
+mkdir -p /mnt/prepare-nvme-devices
+mount -t virtiofs prepare-nvme-devices /mnt/prepare-nvme-devices
+mkdir -p /mnt/kernel-modules-disk
+mount /dev/sr0 /mnt/kernel-modules-disk
+tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
+modprobe tun
+loginctl enable-linger fedora
+
+dnf -y install dnf-plugins-core jq nvme-cli
+dnf-3 config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
+dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+systemctl enable --now docker
+chown -R fedora: /var/run/docker.sock
+
+cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh
+chmod +x /prepare-nvme-devices.sh
+/prepare-nvme-devices.sh
+
+touch /vm-ready

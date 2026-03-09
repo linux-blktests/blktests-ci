@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+
+- name: "Ensure the mitmproxy namespace exists"
+  kubernetes.core.k8s:
+    name: mitmproxy
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: "Read system CA bundle from host"
+  shell: >-
+    cat /etc/ssl/certs/ca-certificates.crt 2>/dev/null ||
+    cat /etc/pki/tls/certs/ca-bundle.crt 2>/dev/null ||
+    cat /etc/ssl/cert.pem 2>/dev/null
+  register: system_ca_bundle
+  changed_when: false
+
+- name: "Check if mitmproxy CA secret already exists"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: mitmproxy-ca
+    namespace: mitmproxy
+  register: existing_ca_secret
+
+- name: "Generate and store mitmproxy CA certificate"
+  when: existing_ca_secret.resources | length == 0
+  block:
+    - name: "Create temp directory for CA generation"
+      tempfile:
+        state: directory
+      register: ca_tmpdir
+
+    - name: "Generate mitmproxy CA private key"
+      command: openssl genrsa -out {{ ca_tmpdir.path }}/mitmproxy-ca.key 4096
+
+    - name: "Generate mitmproxy CA certificate"
+      command: >
+        openssl req -new -x509
+        -key {{ ca_tmpdir.path }}/mitmproxy-ca.key
+        -out {{ ca_tmpdir.path }}/mitmproxy-ca-cert.pem
+        -days 3650
+        -subj '/CN=mitmproxy CA/O=mitmproxy'
+
+    - name: "Create combined CA PEM file (cert + key) for mitmproxy"
+      shell: cat {{ ca_tmpdir.path }}/mitmproxy-ca-cert.pem {{ ca_tmpdir.path }}/mitmproxy-ca.key > {{ ca_tmpdir.path }}/mitmproxy-ca.pem
+
+    - name: "Read CA cert"
+      slurp:
+        src: "{{ ca_tmpdir.path }}/mitmproxy-ca-cert.pem"
+      register: ca_cert_content
+
+    - name: "Read combined CA PEM"
+      slurp:
+        src: "{{ ca_tmpdir.path }}/mitmproxy-ca.pem"
+      register: ca_combined_content
+
+    - name: "Read corporate CA cert"
+      slurp:
+        src: "{{ corporate_ca_cert_path }}"
+      register: corporate_ca_cert_content
+
+    - name: "Create mitmproxy CA Secret"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: mitmproxy-ca
+            namespace: mitmproxy
+          data:
+            mitmproxy-ca.pem: "{{ ca_combined_content.content }}"
+            mitmproxy-ca-cert.pem: "{{ ca_cert_content.content }}"
+            corporate-ca-cert.pem: "{{ corporate_ca_cert_content.content }}"
+
+    - name: "Create mitmproxy CA cert ConfigMap for client distribution"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: mitmproxy-ca-cert
+            namespace: mitmproxy
+          data:
+            mitmproxy-ca-cert.pem: "{{ ca_cert_content.content | b64decode }}"
+            ca-certificates.crt: "{{ system_ca_bundle.stdout ~ '\n' ~ (ca_cert_content.content | b64decode) }}"
+
+    - name: "Cleanup temp directory"
+      file:
+        path: "{{ ca_tmpdir.path }}"
+        state: absent
+
+- name: "Ensure mitmproxy CA cert ConfigMap exists (from existing Secret)"
+  when: existing_ca_secret.resources | length > 0
+  block:
+    - name: "Extract CA cert from existing Secret"
+      set_fact:
+        existing_ca_cert: "{{ existing_ca_secret.resources[0].data['mitmproxy-ca-cert.pem'] | b64decode }}"
+
+    - name: "Update corporate CA cert in existing Secret"
+      kubernetes.core.k8s:
+        state: patched
+        kind: Secret
+        name: mitmproxy-ca
+        namespace: mitmproxy
+        definition:
+          data:
+            corporate-ca-cert.pem: "{{ lookup('file', corporate_ca_cert_path) | b64encode }}"
+
+    - name: "Ensure mitmproxy CA cert ConfigMap"
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: mitmproxy-ca-cert
+            namespace: mitmproxy
+          data:
+            mitmproxy-ca-cert.pem: "{{ existing_ca_cert }}"
+            ca-certificates.crt: "{{ system_ca_bundle.stdout ~ '\n' ~ existing_ca_cert }}"
+
+- name: "Deploy mitmproxy"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/mitmproxy-deployment.yaml.j2
+
+- name: "Deploy mitmproxy Service"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: mitmproxy
+        namespace: mitmproxy
+      spec:
+        selector:
+          app: mitmproxy
+        ports:
+          - name: http
+            port: 8080
+            targetPort: 8080
+
+- name: "Wait for mitmproxy to be ready"
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: mitmproxy
+    namespace: mitmproxy
+  register: mitmproxy_deployment
+  until: >-
+    mitmproxy_deployment.resources | length > 0 and
+    (mitmproxy_deployment.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10

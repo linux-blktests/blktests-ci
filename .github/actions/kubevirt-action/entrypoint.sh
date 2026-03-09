@@ -31,6 +31,15 @@ function run_ssh_cmds() {
   export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
   export kernel_version="${INPUT_KERNEL_VERSION}"
 
+  if [ -f /etc/ssl/certs/mitmproxy-ca-cert.pem ]; then
+    export mitmproxy_ca_cert=$(cat /etc/ssl/certs/mitmproxy-ca-cert.pem)
+  fi
+
+  # Render cloud-init script and create a ConfigMap for the VM to consume via virtiofs
+  j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-vm-init.sh.j2 -o init.sh
+  ./kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | ./kubectl apply -f -
+
+  # Render and create VM
   j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
   ./kubectl create -f vm.yml
   ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
@@ -97,6 +106,7 @@ function extract_dmesg_logs() {
 
 function cleanup_vm() {
   ./kubectl delete -f vm.yml
+  ./kubectl delete configmap ${vm_name}-cloud-init --ignore-not-found=true
 }
 
 #TODO: use dind container that has kubectl and virtctl preinstalled

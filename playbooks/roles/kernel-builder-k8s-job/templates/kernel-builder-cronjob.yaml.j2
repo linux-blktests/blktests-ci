@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kernel-builder
+  namespace: gh-runner-kernel-builder
+spec:
+  schedule: "0 5 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: builder
+            image: container-registry.local:5000/kernel-builder-k8s-job:latest
+            env:
+              - name: DOCKER_HOST
+                value: unix:///var/run/docker.sock
+{% if mitmproxy_enabled %}
+              - name: HTTP_PROXY
+                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+              - name: HTTPS_PROXY
+                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+              - name: NO_PROXY
+                value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+              - name: http_proxy
+                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+              - name: https_proxy
+                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+              - name: no_proxy
+                value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+{% endif %}
+            resources:
+              requests:
+                memory: "8Gi"
+                cpu: "4"
+              limits:
+                memory: "8Gi"
+                cpu: "4"
+            securityContext:
+              privileged: true
+            volumeMounts:
+            - name: docker-daemon-config
+              mountPath: /etc/docker/daemon.json
+              subPath: daemon.json
+{% if mitmproxy_enabled %}
+            - name: mitmproxy-ca-cert
+              mountPath: /etc/ssl/certs/mitmproxy-ca-cert.pem
+              subPath: mitmproxy-ca-cert.pem
+              readOnly: true
+            - name: mitmproxy-ca-cert
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-certificates.crt
+              readOnly: true
+{% endif %}
+          volumes:
+          - name: docker-daemon-config
+            configMap:
+              name: docker-daemon-config
+{% if mitmproxy_enabled %}
+          - name: mitmproxy-ca-cert
+            configMap:
+              name: mitmproxy-ca-cert
+{% endif %}
+          restartPolicy: OnFailure

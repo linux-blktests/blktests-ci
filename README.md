@@ -82,6 +82,35 @@ node-ips.
 The bare metal OS installation on the cluster nodes is out of scope of this
 project. One could use Proxmox or similar software.
 
+### Corporate proxy / mitmproxy (optional)
+If your cluster sits behind a corporate TLS-inspecting firewall, set
+`corporate_ca_cert_path` in `variables.yaml` to the path of the corporate CA
+certificate PEM file on the workstation. When this variable is defined, the
+`install-k8s-requirements.yaml` playbook will:
+
+1. Deploy **mitmproxy** as an in-cluster HTTPS proxy
+   (`mitmproxy.mitmproxy.svc.cluster.local:8080`).
+2. Generate a mitmproxy CA certificate and distribute it (via ConfigMap) to
+   all ARC runners, KubeVirt VMs and the kernel-builder CronJob.
+3. Configure proxy environment variables so that all CI traffic is routed
+   through mitmproxy, which handles upstream TLS verification using the
+   corporate CA.
+
+GitHub Actions workflows that run `docker build` against
+`Dockerfile.linux-kernel-containerdisk` should pass proxy build args so the
+Dockerfile can auto-discover the mitmproxy CA:
+
+```yaml
+docker build \
+  --build-arg http_proxy \
+  --build-arg https_proxy \
+  --build-arg no_proxy \
+  ...
+```
+
+No SSL verification is disabled anywhere; the mitmproxy CA cert is installed
+into the trust store of every component that needs it.
+
 Now is a great time to check on the cluster nodes that all PCIe devices that
 shall be passed to KubeVirt VMs (for CI testing) are rebound to the vfio
 driver on every startup (e.g. through kernel arguments).

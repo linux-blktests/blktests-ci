@@ -25,6 +25,13 @@ kubevirt_cri_version: "v1.64.0"
 #gha-runner-scale-set
 gha_rss_version: "0.13.1"
 
+#mitmproxy
+# Optional: Set corporate_ca_cert_path to the path of your corporate SSL MITM
+# certificate PEM file to deploy mitmproxy in the cluster. When set, mitmproxy
+# is deployed and all ARC runners and KubeVirt VMs route traffic through it.
+# corporate_ca_cert_path: "/path/to/corporate-ca.pem"
+mitmproxy_version: "11.1.3"
+
 #private_container_registry
 private_container_registry_size: "800Gi"
 

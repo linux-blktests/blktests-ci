@@ -116,10 +116,15 @@
         selector:
           app: registry
         ports:
-          - protocol: TCP
+          - name: http
+            protocol: TCP
             port: 80
             targetPort: 5000
-            nodePort: 32000 
+            nodePort: 32000
+          - name: https
+            protocol: TCP
+            port: 443
+            targetPort: 5000
 
 - name: Setup service account for docker-registry to list and exec pods
   kubernetes.core.k8s:

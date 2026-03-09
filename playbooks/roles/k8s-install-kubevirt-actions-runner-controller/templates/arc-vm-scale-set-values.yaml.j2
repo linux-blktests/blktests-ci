@@ -8,6 +8,13 @@ githubConfigUrl: "{{ github_config_url }}"
 githubConfigSecret: "{{ github_config_secret }}"
 maxRunners: 3
 minRunners: 0
+{% if mitmproxy_enabled %}
+githubServerTLS:
+  certificateFrom:
+    configMapKeyRef:
+      name: mitmproxy-ca-cert
+      key: mitmproxy-ca-cert.pem
+{% endif %}
 template:
   #The follwoing is a modification of what `containerMode.type=dind` is doing.
   #We just need to add the docker-daemon-config configMap which allows us to use the local insecure docker registry
@@ -27,11 +34,37 @@ template:
       env:
         - name: DOCKER_HOST
           value: unix:///var/run/docker.sock
+{% if mitmproxy_enabled %}
+        - name: HTTP_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: HTTPS_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: NO_PROXY
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+        - name: http_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: https_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: no_proxy
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+        - name: NODE_EXTRA_CA_CERTS
+          value: /etc/ssl/certs/mitmproxy-ca-cert.pem
+{% endif %}
       volumeMounts:
         - name: work
           mountPath: /home/runner/_work
         - name: dind-sock
           mountPath: /var/run
+{% if mitmproxy_enabled %}
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/mitmproxy-ca-cert.pem
+          subPath: mitmproxy-ca-cert.pem
+          readOnly: true
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
+          readOnly: true
+{% endif %}
       resources:
         limits:
           cpu: "4.0"
@@ -48,6 +81,20 @@ template:
       env:
         - name: DOCKER_GROUP_GID
           value: "123"
+{% if mitmproxy_enabled %}
+        - name: HTTP_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: HTTPS_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: NO_PROXY
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+        - name: http_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: https_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: no_proxy
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+{% endif %}
       securityContext:
         privileged: true
       volumeMounts:
@@ -60,6 +107,16 @@ template:
         - name: docker-daemon-config
           mountPath: /etc/docker/daemon.json
           subPath: daemon.json
+{% if mitmproxy_enabled %}
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/mitmproxy-ca-cert.pem
+          subPath: mitmproxy-ca-cert.pem
+          readOnly: true
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
+          readOnly: true
+{% endif %}
     volumes:
     - name: work
       emptyDir: {}
@@ -70,3 +127,36 @@ template:
     - name: docker-daemon-config
       configMap:
         name: docker-daemon-config
+{% if mitmproxy_enabled %}
+    - name: mitmproxy-ca-cert
+      configMap:
+        name: mitmproxy-ca-cert
+{% endif %}
+{% if mitmproxy_enabled %}
+listenerTemplate:
+  spec:
+    containers:
+    - name: listener
+      env:
+        - name: HTTP_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: HTTPS_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: NO_PROXY
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+        - name: http_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: https_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: no_proxy
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+      volumeMounts:
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
+          readOnly: true
+    volumes:
+    - name: mitmproxy-ca-cert
+      configMap:
+        name: mitmproxy-ca-cert
+{% endif %}

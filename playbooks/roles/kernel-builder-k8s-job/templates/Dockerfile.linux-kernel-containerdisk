@@ -10,6 +10,22 @@ ARG KERNEL_TREE
 ARG KERNEL_REF
 ARG KERNEL_TAG_OVERWRITE=""
 
+SHELL ["/bin/bash", "-c"]
+RUN PROXY_URL="${http_proxy:-${HTTP_PROXY:-}}"; \
+    if [ -n "$PROXY_URL" ]; then \
+      echo "Proxy detected: $PROXY_URL"; \
+      if curl -sf http://mitm.it/cert/pem -o /tmp/mitmproxy-ca-cert.pem && \
+         grep -q "BEGIN CERTIFICATE" /tmp/mitmproxy-ca-cert.pem; then \
+        echo "Installing mitmproxy CA cert into trust store"; \
+        cp /tmp/mitmproxy-ca-cert.pem /etc/pki/ca-trust/source/anchors/; \
+        update-ca-trust; \
+      else \
+        echo "WARNING: Could not fetch mitmproxy CA cert from http://mitm.it/cert/pem"; \
+      fi; \
+      echo -e "proxy=$PROXY_URL" >> /etc/dnf/dnf.conf; \
+      printf '[http]\n\tproxy = %s\n' "$PROXY_URL" > /root/.gitconfig; \
+    fi
+
 RUN dnf update -y && \
     dnf install -y \
     git \
@@ -34,8 +50,8 @@ RUN mkdir -p /version
 
 ADD ./get-base-kernel-artifacts.sh .
 RUN chmod 755 get-base-kernel-artifacts.sh
-ADD ./build-kernel.sh .
-RUN chmod 755 build-kernel.sh
+ARG BUILD_KERNEL_SCRIPT_URL="https://raw.githubusercontent.com/linux-blktests/blktests-ci/refs/heads/main/playbooks/roles/kernel-builder-k8s-job/templates/build-kernel.sh"
+RUN curl -sfL "${BUILD_KERNEL_SCRIPT_URL}" -o ./build-kernel.sh && chmod 755 build-kernel.sh
 
 COPY --from=quay.io/containerdisks/fedora:42 /disk/disk.img /base-fedora-cloud-img.qcow2
 

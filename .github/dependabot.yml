@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/.github/actions/kubevirt-action"
+    schedule:
+      interval: "weekly"
+

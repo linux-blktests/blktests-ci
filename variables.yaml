@@ -6,10 +6,10 @@
 
 #Longhorn
 longhorn_helm_chart_url: "https://charts.longhorn.io"
-longhorn_version: "1.8.0"
+longhorn_version: "1.11.0"
 # The external snapshotter version depends on the longhorn version.
-# See: https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/enable-csi-snapshot-support/
-longhorn_external_snapshotter_version: "v8.2.0"
+# See: https://longhorn.io/docs/1.11.0/snapshots-and-backups/csi-snapshot-support/enable-csi-snapshot-support/
+longhorn_external_snapshotter_version: "v8.4.0"
 
 #rook-ceph
 rook_ceph_version: "v1.16.4"
@@ -19,11 +19,11 @@ rook_ceph_repo: "https://github.com/rook/rook.git"
 prometheus_helm_chart_url: "https://prometheus-community.github.io/helm-charts"
 
 #KubeVirt
-kubevirt_version: "v1.4.0"
-kubevirt_cri_version: "v1.61.1"
+kubevirt_version: "v1.7.0"
+kubevirt_cri_version: "v1.64.0"
 
 #gha-runner-scale-set
-gha_rss_version: "0.12.1"
+gha_rss_version: "0.13.1"
 
 #private_container_registry
 private_container_registry_size: "800Gi"

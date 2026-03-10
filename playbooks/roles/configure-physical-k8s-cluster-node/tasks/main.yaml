@@ -14,7 +14,7 @@
 - name: "Install Longhorn dependency"
   become: yes
   ansible.builtin.package:
-    name: "{{ longhorn_package_dependencies }}"
+    name: "{{ lognhorn_dependency_packages }}"
     state: present
 
 - name: "Enable iscsid on RedHat family"
@@ -67,10 +67,11 @@
 
 - name: "Ensure iscsi_tcp module is loaded on boot"
   become: yes
-  lineinfile:
-    path: "/etc/modprobe.d/iscsi-tcp.conf"
-    line: iscsi_tcp
-    state: present
+  copy:
+    content: |
+      iscsi_tcp
+    dest: "/etc/modprobe.d/iscsi-tcp.conf"
+    mode: '0644'
 
 - name: Increase limits for inotify watches
   become: yes

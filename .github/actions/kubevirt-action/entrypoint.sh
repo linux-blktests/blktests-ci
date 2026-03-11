@@ -52,7 +52,7 @@ function extract_test_artifacts_for_upload() {
   vm_artifact_upload_dir="$1"
   rm -rf artifacts
   mkdir artifacts
-  ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
+  ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@vmi/${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
 }
 
 function extract_kernel_artifacts() {

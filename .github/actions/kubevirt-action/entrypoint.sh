@@ -36,12 +36,12 @@ function run_ssh_cmds() {
   ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
   while true; do
     echo "Waiting for VM to be up and running"
-    ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
+    ./virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
     sleep 10
   done
 
   run_cmds="${INPUT_RUN_CMDS}"
-  ./virtctl ssh ${vm_user}@${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
+  ./virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
 }
 
 function extract_test_artifacts_for_upload() {

@@ -7,4 +7,4 @@
 
 export vm_name="vm-runner-${GITHUB_JOB}-${GITHUB_RUN_ID}"
 export vm_user="fedora"
-export ssh_options=(--identity-file=$(realpath ./identity | xargs) --local-ssh --local-ssh-opts="-o StrictHostKeyChecking=no")
+export ssh_options=(--identity-file=$(realpath ./identity | xargs) --local-ssh-opts="-o StrictHostKeyChecking=no")

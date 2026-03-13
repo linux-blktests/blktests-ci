@@ -6,6 +6,7 @@
 
 - include_vars: ../../../../variables.yaml
 
+#TODO: the helm chart will be forked to the grafana-community/helm-charts repository soon: https://github.com/grafana/loki/tree/main/production/helm/loki#%EF%B8%8F-helm-chart-migration
 - name: Add Grafana repository
   kubernetes.core.helm_repository:
     name: grafana
@@ -65,17 +66,6 @@
           limits:
             cpu: "2"
             memory: "4Gi"
-      sidecar:
-        image:
-          repository: kiwigrid/k8s-sidecar
-          tag: 1.30.3
-        resources:
-          requests:
-            cpu: 50m
-            memory: 50Mi
-          limits:
-            cpu: 100m
-            memory: 100Mi
       backend:
         replicas: 0
       read:
@@ -177,7 +167,7 @@
 
 - name: Install grafana
   kubernetes.core.helm:
-    name: alloy
+    name: grafana
     chart_ref: grafana/grafana
     release_namespace: logging
     create_namespace: true

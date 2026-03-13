@@ -79,7 +79,7 @@ function extract_kernel_artifacts() {
   tar -xf tmp-containerdisk.tar
   cd blobs/sha256
   for f in *; do
-    if file "$f" | grep -q "POSIX tar archive"; then
+    if file -z "$f" | grep -q "POSIX tar archive"; then
       tar -xf "$f" -C $dir
     fi
   done

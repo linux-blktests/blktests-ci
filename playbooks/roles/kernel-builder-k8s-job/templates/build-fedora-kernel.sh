@@ -8,6 +8,7 @@
 set -e
 set -x
 dockerd --host=unix:///var/run/docker.sock --group=123 &
+wget -O /build-kernel.sh https://raw.githubusercontent.com/linux-blktests/blktests-ci/refs/heads/main/playbooks/roles/kernel-builder-k8s-job/templates/build-kernel.sh
 KERNEL_TREE=https://github.com/torvalds/linux
 KERNEL_REF=master
 KERNEL_TAG_OVERWRITE=linus-master

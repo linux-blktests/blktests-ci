@@ -62,9 +62,21 @@ yes "" | make olddefconfig
 ./scripts/config --set-val CONFIG_LOCKDEP_BITS 21
 ./scripts/config --set-val CONFIG_LOCKDEP_CHAINS_BITS 21
 ./scripts/config --set-val CONFIG_LOCKDEP_STACK_TRACE_BITS 21
-# Build in CONFIG_IP_NF_IPTABLES for podman
-# https://github.com/microsoft/WSL/issues/12108
+# Enable nftables backend for iptables-nft (used by container runtimes).
+# Since kernel 7.0-rc, legacy iptables tables (nat, filter) require
+# CONFIG_NETFILTER_XTABLES_LEGACY which is not enabled by default.
+# Instead of enabling the legacy path, use iptables-nft which translates
+# iptables commands to nftables in the kernel via NFT_COMPAT.
+./scripts/config --enable CONFIG_NF_TABLES
+./scripts/config --enable CONFIG_NF_TABLES_INET
+./scripts/config --enable CONFIG_NFT_NAT
+./scripts/config --enable CONFIG_NFT_MASQ
+./scripts/config --enable CONFIG_NFT_COMPAT
+./scripts/config --enable CONFIG_NF_CONNTRACK
+./scripts/config --enable CONFIG_NF_NAT
+./scripts/config --enable CONFIG_NETFILTER_XTABLES
 ./scripts/config --enable CONFIG_IP_NF_IPTABLES
+./scripts/config --enable CONFIG_IP_NF_NAT
 ./scripts/config --enable CONFIG_BINFMT_MISC
 #TODO: remove disabling
 #Disabling cxl because of compile errors

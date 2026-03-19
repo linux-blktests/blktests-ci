@@ -53,12 +53,7 @@ tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
 modprobe tun
 loginctl enable-linger fedora
 
-dnf -y install dnf-plugins-core jq nvme-cli
-dnf-3 config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
-dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-
-systemctl enable --now docker
-chown -R fedora: /var/run/docker.sock
+dnf -y install podman jq nvme-cli
 
 cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh
 chmod +x /prepare-nvme-devices.sh

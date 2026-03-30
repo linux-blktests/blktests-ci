@@ -24,6 +24,52 @@ function install_requirements() {
   unzip -o logcli-linux-amd64.zip
 }
 
+function resolve_host_devices() {
+  local devices_json="[]"
+
+  if [ -n "${INPUT_HOST_DEVICES:-}" ]; then
+    # Parse comma-separated short device names into a JSON array
+    # Duplicates are supported to request multiple devices of the same type
+    declare -A device_counters
+    devices_json="["
+    local first=true
+    IFS=',' read -ra DEVICES <<< "${INPUT_HOST_DEVICES}"
+    for dev in "${DEVICES[@]}"; do
+      dev=$(echo "$dev" | xargs) # trim whitespace
+      [ -z "$dev" ] && continue
+      local count=${device_counters[$dev]:-0}
+      device_counters[$dev]=$((count + 1))
+      local name="${dev}-${count}"
+      if [ "$first" = true ]; then
+        first=false
+      else
+        devices_json+=","
+      fi
+      devices_json+="{\"name\":\"${name}\",\"deviceName\":\"devices.kubevirt.io/${dev}\"}"
+    done
+    devices_json+="]"
+  else
+    # Auto-discover PCI host devices: query KubeVirt CR for permitted
+    # pciHostDevices, then cross-reference with node allocatable resources
+    permitted=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o json \
+      | jq -c '[.spec.configuration.permittedHostDevices.pciHostDevices[].resourceName] | unique')
+    devices_json=$(./kubectl get nodes -o json | jq -c --argjson permitted "$permitted" '
+      [.items[].status.allocatable // {} | to_entries[]
+        | select(.key as $k | $permitted | index($k))
+        | select(.value != "0")]
+      | unique_by(.key)
+      | to_entries
+      | map({
+          name: (.value.key | ltrimstr("devices.kubevirt.io/") | . + "-0"),
+          deviceName: .value.key
+        })
+    ')
+  fi
+
+  export host_devices="${devices_json}"
+  echo "Resolved host devices: ${host_devices}"
+}
+
 function run_ssh_cmds() {
   if [ ! -f ./identity ]; then
     ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
@@ -35,12 +81,23 @@ function run_ssh_cmds() {
     export mitmproxy_ca_cert=$(cat /etc/ssl/certs/mitmproxy-ca-cert.pem)
   fi
 
+  resolve_host_devices
+
   # Render cloud-init script and create a ConfigMap for the VM to consume via virtiofs
   j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-vm-init.sh.j2 -o init.sh
   ./kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | ./kubectl apply -f -
 
+  # Write YAML data file for VM template rendering (host_devices is a JSON
+  # array which is valid YAML, so j2 parses it into a native list of dicts)
+  cat > vm-data.yaml << EOF
+vm_name: "${vm_name}"
+kernel_version: "${kernel_version}"
+vm_ssh_authorized_keys: "${vm_ssh_authorized_keys}"
+host_devices: ${host_devices}
+EOF
+
   # Render and create VM
-  j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 -o vm.yml
+  j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 vm-data.yaml -o vm.yml
   ./kubectl create -f vm.yml
   ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
   while true; do

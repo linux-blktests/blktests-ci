@@ -45,3 +45,25 @@ roleRef:
   kind: Role
   name: kubevirt-actions-runner
   apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubevirt-actions-runner-node-reader-{{ runner_set_name }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubevirt-actions-runner-node-reader-{{ runner_set_name }}
+subjects:
+  - kind: ServiceAccount
+    name: kubevirt-actions-runner
+    namespace: "gh-runner-{{ runner_set_name }}"
+roleRef:
+  kind: ClusterRole
+  name: kubevirt-actions-runner-node-reader-{{ runner_set_name }}
+  apiGroup: rbac.authorization.k8s.io

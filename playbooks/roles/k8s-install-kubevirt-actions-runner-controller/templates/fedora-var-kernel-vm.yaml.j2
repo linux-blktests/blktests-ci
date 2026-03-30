@@ -44,11 +44,13 @@ spec:
           interfaces:
             - name: default
               masquerade: {}
+{% if host_devices %}
           hostDevices:
-            - name: nvme-zns-0
-              deviceName: devices.kubevirt.io/nvme-wdc-zn540
-            - name: nvme-conv-0
-              deviceName: devices.kubevirt.io/nvme-wdc-sn640
+{% for dev in host_devices %}
+            - name: {{ dev.name }}
+              deviceName: {{ dev.deviceName }}
+{% endfor %}
+{% endif %}
         cpu:
           cores: 4
         resources:

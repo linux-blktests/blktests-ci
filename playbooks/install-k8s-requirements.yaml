@@ -75,6 +75,17 @@
         name: k3s
         state: restarted
 
+- name: "Deploy overlayfs cleanup cron job on k3s nodes"
+  hosts: physical_k8s_cluster_nodes
+  tasks:
+    - name: "Deploy cron job to prune unused container images"
+      become: yes
+      cron:
+        name: "k3s crictl image prune"
+        minute: "0"
+        hour: "3"
+        job: "k3s crictl rmi --prune >> /var/log/k3s-image-cleanup.log 2>&1"
+
 #TODO: Add step to config the following on local machine where docker image
 # should be pushed from:
 # /etc/docker/daemon.json

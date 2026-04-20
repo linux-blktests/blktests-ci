@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+
+- name: "Ensure the kernel-patches-daemon namespace exists"
+  kubernetes.core.k8s:
+    name: kernel-patches-daemon
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: "Get private docker registry IP"
+  ansible.builtin.set_fact:
+    registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
+
+- name: "Create temp directory for kpd image build"
+  tempfile:
+    state: directory
+  register: kpd_build_dir
+
+- name: "Clone kernel-patches-daemon repository"
+  git:
+    repo: "{{ kpd_image_repo }}"
+    dest: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+    version: "{{ kpd_image_branch }}"
+    depth: 1
+
+- name: "Read labels.json from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/labels.json"
+  register: kpd_labels_json_raw
+
+- name: "Read template_base from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_base"
+  register: kpd_template_base_raw
+
+- name: "Read template_success from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_success"
+  register: kpd_template_success_raw
+
+- name: "Read template_failure from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_failure"
+  register: kpd_template_failure_raw
+
+- name: "Store kpd config file contents"
+  set_fact:
+    kpd_labels_json: "{{ kpd_labels_json_raw.content | b64decode }}"
+    kpd_template_base: "{{ kpd_template_base_raw.content | b64decode }}"
+    kpd_template_success: "{{ kpd_template_success_raw.content | b64decode }}"
+    kpd_template_failure: "{{ kpd_template_failure_raw.content | b64decode }}"
+
+- name: "Ensure poetry is installed"
+  pip:
+    name: poetry
+    state: present
+
+- name: "Generate poetry.lock if absent"
+  command: poetry lock
+  args:
+    chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+    creates: "{{ kpd_build_dir.path }}/kernel-patches-daemon/poetry.lock"
+
+- name: "Build and push kernel-patches-daemon image to private registry"
+  shell: |
+    docker build \
+      --build-arg http_proxy \
+      --build-arg https_proxy \
+      --build-arg no_proxy \
+      -t {{ registry_ip }}:32000/kernel-patches-daemon:latest .
+    docker push {{ registry_ip }}:32000/kernel-patches-daemon:latest
+  args:
+    chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+
+- name: "Cleanup kpd build directory"
+  file:
+    path: "{{ kpd_build_dir.path }}"
+    state: absent
+
+- name: "Check if mitmproxy is deployed in the cluster"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: mitmproxy-ca-cert
+    namespace: mitmproxy
+  register: mitmproxy_ca_configmap
+
+- name: "Set mitmproxy_enabled fact"
+  set_fact:
+    mitmproxy_enabled: "{{ mitmproxy_ca_configmap.resources | length > 0 }}"
+
+- name: "Copy mitmproxy CA cert ConfigMap to kpd namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mitmproxy-ca-cert
+        namespace: kernel-patches-daemon
+      data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
+  when: mitmproxy_enabled
+
+- name: "Template kpd configuration file"
+  set_fact:
+    kpd_config_json: "{{ lookup('template', '../templates/kpd-config.json.j2') }}"
+
+- name: "Create kpd-config Secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: kpd-config
+        namespace: kernel-patches-daemon
+      stringData:
+        kpd.json: "{{ kpd_config_json | to_json }}"
+        github-app-private-key.pem: "{{ kpd_github_app_private_key }}"
+        labels.json: "{{ kpd_labels_json | to_json }}"
+        template_base: "{{ kpd_template_base }}"
+        template_success: "{{ kpd_template_success }}"
+        template_failure: "{{ kpd_template_failure }}"
+
+- name: "Template leader-election wrapper script"
+  set_fact:
+    kpd_leader_election_script: "{{ lookup('template', '../templates/kpd-leader-election.py.j2') }}"
+
+- name: "Create kpd-leader-election ConfigMap"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: kpd-leader-election
+        namespace: kernel-patches-daemon
+      data:
+        kpd-leader-election.py: "{{ kpd_leader_election_script }}"
+
+- name: "Deploy kernel-patches-daemon"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/kpd-deployment.yaml.j2
+
+- name: "Wait for kernel-patches-daemon to be ready"
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: kernel-patches-daemon
+    namespace: kernel-patches-daemon
+  register: kpd_deployment
+  until: >-
+    kpd_deployment.resources is defined and
+    kpd_deployment.resources | length > 0 and
+    (kpd_deployment.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10

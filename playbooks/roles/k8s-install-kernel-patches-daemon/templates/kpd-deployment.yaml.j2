@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kernel-patches-daemon
+  namespace: kernel-patches-daemon
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: kernel-patches-daemon
+  template:
+    metadata:
+      labels:
+        app: kernel-patches-daemon
+    spec:
+      containers:
+        - name: kpd
+          image: container-registry.local:5000/kernel-patches-daemon:latest
+          command: ["python", "/app/scripts/kpd-leader-election.py"]
+          env:
+            - name: GIT_AUTHOR_NAME
+              value: "kernel-patches-daemon"
+            - name: GIT_AUTHOR_EMAIL
+              value: "kpd@{{ kpd_cluster_name }}.local"
+            - name: GIT_COMMITTER_NAME
+              value: "kernel-patches-daemon"
+            - name: GIT_COMMITTER_EMAIL
+              value: "kpd@{{ kpd_cluster_name }}.local"
+{% if mitmproxy_enabled | default(false) | bool %}
+            - name: HTTP_PROXY
+              value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+            - name: HTTPS_PROXY
+              value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+            - name: NO_PROXY
+              value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+            - name: http_proxy
+              value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+            - name: https_proxy
+              value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+            - name: no_proxy
+              value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+            - name: REQUESTS_CA_BUNDLE
+              value: "/etc/ssl/certs/ca-certificates.crt"
+            - name: SSL_CERT_FILE
+              value: "/etc/ssl/certs/ca-certificates.crt"
+{% endif %}
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "4Gi"
+          volumeMounts:
+            - name: kpd-config
+              mountPath: /app/configs
+              readOnly: true
+            - name: kpd-leader-election
+              mountPath: /app/scripts
+              readOnly: true
+            - name: repos-tmp
+              mountPath: /tmp/repos
+{% if mitmproxy_enabled | default(false) | bool %}
+            - name: mitmproxy-ca-cert
+              mountPath: /etc/ssl/certs/ca-certificates.crt
+              subPath: ca-certificates.crt
+              readOnly: true
+{% endif %}
+      volumes:
+        - name: kpd-config
+          secret:
+            secretName: kpd-config
+        - name: kpd-leader-election
+          configMap:
+            name: kpd-leader-election
+            defaultMode: 493
+        - name: repos-tmp
+          emptyDir: {}
+{% if mitmproxy_enabled | default(false) | bool %}
+        - name: mitmproxy-ca-cert
+          configMap:
+            name: mitmproxy-ca-cert
+{% endif %}

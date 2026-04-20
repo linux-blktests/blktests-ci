@@ -111,6 +111,88 @@ docker build \
 No SSL verification is disabled anywhere; the mitmproxy CA cert is installed
 into the trust store of every component that needs it.
 
+### Kernel Patches Daemon / kpd (optional)
+[kernel-patches-daemon](https://github.com/linux-blktests/kernel-patches-daemon/tree/blktests)
+(kpd) watches patchwork for new series sent to the linux-block mailing list,
+applies them on top of a GitHub repository and creates pull requests that
+trigger CI workflows.
+
+kpd is deployed automatically when `kpd_github_app_id` is defined in
+`secrets.enc`. To enable it:
+g
+1. **Create a GitHub App**:
+   Navigate to your organisation's GitHub settings -> Developer settings ->
+   GitHub Apps -> New GitHub App
+   - Pick a name. This will be the PR bots username
+   - Set the Homepage URL to your org's GitHub page
+   - Deactivate Webhooks
+   - Select the following Repository permissions:
+      - Contents: Read and write
+      - Issues: Read and write
+      - Pull requests: Read and write
+      - Workflows: Read and write
+   - Click "Create GitHub App"
+   - Note the App ID for the kpd_github_app_id secret
+   - Scroll down, generate and note the private key for the
+     kpd_github_app_private_key secret
+   - In the left menu hit "Install APP" and klick "Install" for the
+     organisation you want to use. -> Install
+  - Select Repository access for kpd_target_repo and kpd_lock_repo
+  - Note down the installation ID (last part of the URL) for
+    kpd_github_app_installation_id
+
+2. **Create the lock repository** `linux-blktests/blktests-kpd-lock` (or
+   whichever name is set in `kpd_lock_repo` in `variables.yaml`). This
+   repository is used for cross-cluster leader election. The GitHub App must
+   also have Contents read/write access to this repository. Initialize the
+   repository with a README or leave it empty — the lock file will be created
+   automatically.
+
+3. **Add the secrets** to `secrets.enc` via `ansible-vault edit secrets.enc`:
+   ```yaml
+   kpd_github_app_id: "<app-id>"
+   kpd_github_app_installation_id: <installation-id>
+   kpd_github_app_private_key: |
+     -----BEGIN RSA PRIVATE KEY-----
+     ...
+     -----END RSA PRIVATE KEY-----
+   kpd_patchwork_api_username: "<patchwork-username>"
+   kpd_patchwork_api_token: "<patchwork-api-token>"
+   ```
+
+4. **Set `kpd_cluster_name`** in `variables.yaml` to a unique name for each
+   cluster (e.g. `cluster-west`, `cluster-east`). This identifies the cluster
+   in the leader election lock.
+
+5. **Set SMTP credentials** (optional) in `secrets.enc` via
+   `ansible-vault edit secrets.enc` for KPD email notifications.
+
+#### Cross-cluster leader election
+
+kpd supports deployment across multiple disjoint Kubernetes clusters with
+automatic active/passive failover. Only one instance is active at a time;
+the others remain in standby.
+
+The leader election uses a file (`lock.json`) in the `kpd-lock` GitHub
+repository as a distributed lock:
+
+- The active instance writes its cluster name and a timestamp to
+  `lock.json` using the GitHub Contents API. GitHub's SHA-based
+  compare-and-swap prevents concurrent writers.
+- A heartbeat updates the timestamp every `kpd_heartbeat_interval_seconds`
+  (default 30 s).
+- Standby instances poll the lock. If the timestamp is older than
+  `kpd_lock_ttl_seconds` (default 120 s), a standby attempts a takeover.
+- On graceful shutdown the active instance deletes the lock file so
+  failover is immediate.
+
+#### Manual override
+
+Set `kpd_active: false` in `variables.yaml` (or uncomment the existing
+line) to force a cluster into permanent standby regardless of the lock
+state. This is useful during maintenance. Re-run the playbook after
+changing the value.
+
 Now is a great time to check on the cluster nodes that all PCIe devices that
 shall be passed to KubeVirt VMs (for CI testing) are rebound to the vfio
 driver on every startup (e.g. through kernel arguments).

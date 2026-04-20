@@ -1,0 +1,79 @@
+{
+  "version": 3,
+  "patchwork": {
+    "server": "patchwork.kernel.org",
+    "project": "linux-block",
+    "search_patterns": [
+      {
+        "archived": false,
+        "project": 241
+      }
+    ],
+    "api_username": "{{ kpd_patchwork_api_username }}",
+    "api_token": "{{ kpd_patchwork_api_token }}",
+    "lookback": 7
+  },
+  "tag_to_branch_mapping": {
+    "PULL": [
+    ],
+    "blktests": [
+    ],
+    "blktrace": [
+    ],
+    "stable": [
+    ],
+    "for-next": [
+      "for-next"
+    ],
+    "__DEFAULT__": [
+      "linus-master",
+      "for-next"
+    ]
+  },
+  "branches": {
+    "for-next": {
+      "github_app_auth": {
+        "app_id": "{{ kpd_github_app_id }}",
+        "installation_id": {{ kpd_github_app_installation_id }},
+        "private_key_path": "/app/configs/github-app-private-key.pem"
+      },
+      "repo": "{{ kpd_target_repo }}",
+      "upstream": "https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git",
+      "upstream_branch": "for-next",
+      "ci_repo": "{{ kpd_ci_repo }}",
+      "ci_branch": "{{ kpd_ci_branch }}"
+    },
+    "linus-master": {
+      "github_app_auth": {
+        "app_id": "{{ kpd_github_app_id }}",
+        "installation_id": {{ kpd_github_app_installation_id }},
+        "private_key_path": "/app/configs/github-app-private-key.pem"
+      },
+      "repo": "{{ kpd_target_repo }}",
+      "upstream": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
+      "upstream_branch": "master",
+      "ci_repo": "{{ kpd_ci_repo }}",
+      "ci_branch": "{{ kpd_ci_branch }}"
+    }
+  },
+  "base_directory": "/tmp/repos",
+  "certificate_path": "/etc/ssl/certs/ca-certificates.crt"{% if kpd_smtp_host is defined %},
+  "email": {
+    "host": "{{ kpd_smtp_host }}",
+    "port": {{ kpd_smtp_port | default(465) }},
+    "from": "{{ kpd_smtp_from }}",
+    "user": {{ kpd_smtp_user | default(None) | to_json }},
+    "pass": {{ kpd_smtp_pass | default(None) | to_json }},
+    "to": {{ kpd_smtp_to | default([]) | to_json }},
+    "cc": {{ kpd_smtp_cc | default([]) | to_json }},
+    "use_tls": {{ kpd_smtp_tls | default(true) | to_json }},
+    "http_proxy": {{ kpd_smtp_http_proxy | default(None) | to_json }},
+    "submitter_allowlist": {{ kpd_smtp_submitter_allowlist | default([]) | to_json }},
+    "ignore_allowlist": {{ kpd_smtp_ignore_allowlist | default(false) | to_json }},
+    "template_base": "/app/configs/template_base",
+    "template_merge_conflict": null,
+    "template_success": "/app/configs/template_success",
+    "template_failure": "/app/configs/template_failure"
+  }
+{% endif %}
+}

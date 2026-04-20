@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+#
+# Leader election wrapper for kernel-patches-daemon (kpd).
+# Uses a GitHub repository file as a distributed lock with SHA-based CAS
+# to coordinate active/passive failover across disjoint Kubernetes clusters.
+
+import base64
+import json
+import logging
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+import jwt
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+# ---------------------------------------------------------------------------
+# Configuration (injected by Ansible / Jinja2)
+# ---------------------------------------------------------------------------
+LOCK_REPO = "{{ kpd_lock_repo }}"
+CLUSTER_NAME = "{{ kpd_cluster_name }}"
+LOCK_TTL = {{ kpd_lock_ttl_seconds }}
+HEARTBEAT_INTERVAL = {{ kpd_heartbeat_interval_seconds }}
+RETRY_INTERVAL = min(60, HEARTBEAT_INTERVAL)
+LOCK_FILE_PATH = "lock.json"
+KPD_ACTIVE = "{{ kpd_active | default('true') }}"
+
+GH_APP_ID = "{{ kpd_github_app_id }}"
+GH_APP_INSTALL_ID = "{{ kpd_github_app_installation_id }}"
+GH_APP_KEY_PATH = "/app/configs/github-app-private-key.pem"
+
+GITHUB_API = "https://api.github.com"
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [leader-election] %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
+)
+logging.Formatter.converter = time.gmtime
+log = logging.getLogger("leader-election")
+
+# ---------------------------------------------------------------------------
+# Global state
+# ---------------------------------------------------------------------------
+kpd_process: subprocess.Popen | None = None
+heartbeat_stop = threading.Event()
+held_lock = False
+lock_sha: str | None = None
+shutdown_event = threading.Event()
+
+# GitHub installation token cache
+_gh_token: str | None = None
+_gh_token_expires: float = 0
+
+
+# ---------------------------------------------------------------------------
+# GitHub App authentication
+# ---------------------------------------------------------------------------
+def _load_private_key():
+    with open(GH_APP_KEY_PATH, "rb") as f:
+        return load_pem_private_key(f.read(), password=None)
+
+
+def _generate_jwt() -> str:
+    now = int(time.time())
+    payload = {"iat": now - 60, "exp": now + 600, "iss": GH_APP_ID}
+    private_key = _load_private_key()
+    return jwt.encode(payload, private_key, algorithm="RS256")
+
+
+def _get_installation_token() -> str:
+    token = _generate_jwt()
+    url = f"{GITHUB_API}/app/installations/{GH_APP_INSTALL_ID}/access_tokens"
+    req = urllib.request.Request(
+        url,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read())
+    return data["token"]
+
+
+def ensure_token() -> str:
+    global _gh_token, _gh_token_expires
+    now = time.time()
+    if _gh_token is None or now >= _gh_token_expires:
+        log.info("Refreshing GitHub installation token...")
+        _gh_token = _get_installation_token()
+        _gh_token_expires = now + 3000
+    return _gh_token
+
+
+# ---------------------------------------------------------------------------
+# Lock operations
+# ---------------------------------------------------------------------------
+def _github_request(url: str, method: str = "GET", data: dict | None = None):
+    """Make an authenticated GitHub API request. Returns (status, body_dict)."""
+    token = ensure_token()
+    body_bytes = json.dumps(data).encode() if data else None
+    req = urllib.request.Request(
+        url,
+        method=method,
+        data=body_bytes,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = {}
+        try:
+            body = json.loads(e.read())
+        except Exception:
+            pass
+        return e.code, body
+
+
+def read_lock() -> tuple[dict | None, str | None]:
+    """Read the current lock file. Returns (lock_content_dict, sha) or (None, None)."""
+    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_PATH}"
+    status, body = _github_request(url)
+
+    if status == 404:
+        return None, None
+    if status == 200:
+        sha = body["sha"]
+        content = base64.b64decode(body["content"]).decode()
+        return json.loads(content), sha
+    log.error("Failed to read lock file (HTTP %d)", status)
+    raise RuntimeError(f"Failed to read lock file (HTTP {status})")
+
+
+def write_lock(holder: str, timestamp: str, sha: str | None) -> str | None:
+    """Write the lock file using CAS. Returns new SHA on success, None on conflict."""
+    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_PATH}"
+    content_b64 = base64.b64encode(
+        json.dumps({"holder": holder, "timestamp": timestamp}).encode()
+    ).decode()
+
+    payload: dict = {
+        "message": f"kpd lock update by {holder}",
+        "content": content_b64,
+    }
+    if sha:
+        payload["sha"] = sha
+    else:
+        payload["message"] = f"kpd lock created by {holder}"
+
+    status, body = _github_request(url, method="PUT", data=payload)
+    if status in (200, 201):
+        return body["content"]["sha"]
+    log.warning(
+        "Lock write failed (HTTP %d) — likely a concurrent update", status)
+    return None
+
+
+def delete_lock_file():
+    """Delete the lock file if we are the current holder."""
+    try:
+        content, sha = read_lock()
+    except RuntimeError:
+        return
+    if content is None or sha is None:
+        return
+    if content.get("holder") != CLUSTER_NAME:
+        return
+
+    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_PATH}"
+    payload = {"message": f"kpd lock released by {CLUSTER_NAME}", "sha": sha}
+    try:
+        _github_request(url, method="DELETE", data=payload)
+        log.info("Lock released")
+    except Exception:
+        log.warning("Failed to release lock (best-effort)")
+
+
+# ---------------------------------------------------------------------------
+# Lock acquisition
+# ---------------------------------------------------------------------------
+def try_acquire() -> bool:
+    """Try to acquire the lock. Returns True if acquired."""
+    global lock_sha
+    try:
+        content, sha = read_lock()
+    except RuntimeError:
+        return False
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if content is None:
+        log.info("No lock file found — creating lock...")
+        new_sha = write_lock(CLUSTER_NAME, now_iso, None)
+        if new_sha:
+            lock_sha = new_sha
+            log.info("Lock acquired (new file)")
+            return True
+        return False
+
+    holder = content.get("holder", "")
+    timestamp = content.get("timestamp", "")
+
+    if holder == CLUSTER_NAME:
+        log.info("Lock already held by us — refreshing")
+        new_sha = write_lock(CLUSTER_NAME, now_iso, sha)
+        lock_sha = new_sha or sha
+        return True
+
+    try:
+        lock_time = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        age = (datetime.now(timezone.utc) - lock_time).total_seconds()
+    except (ValueError, TypeError):
+        age = float("inf")
+
+    if age > LOCK_TTL:
+        log.info(
+            "Lock held by '%s' is stale (age=%.0fs > TTL=%ds) — attempting takeover...",
+            holder,
+            age,
+            LOCK_TTL,
+        )
+        new_sha = write_lock(CLUSTER_NAME, now_iso, sha)
+        if new_sha:
+            lock_sha = new_sha
+            log.info("Lock acquired (takeover from '%s')", holder)
+            return True
+        return False
+
+    log.info("Lock held by '%s' (age=%.0fs) — staying standby", holder, age)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat
+# ---------------------------------------------------------------------------
+def heartbeat_loop():
+    """Periodically refresh the lock timestamp while we hold the lock."""
+    global lock_sha
+    while not heartbeat_stop.wait(HEARTBEAT_INTERVAL):
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            content, sha = read_lock()
+        except RuntimeError:
+            continue
+
+        if content is None:
+            log.warning("Lock file disappeared — stopping kpd")
+            _stop_kpd()
+            break
+
+        if content.get("holder") == CLUSTER_NAME:
+            new_sha = write_lock(CLUSTER_NAME, now_iso, sha)
+            if new_sha:
+                lock_sha = new_sha
+            else:
+                log.warning("Heartbeat update failed")
+        else:
+            log.warning(
+                "Lock no longer held by us (holder='%s') — stopping kpd",
+                content.get("holder"),
+            )
+            _stop_kpd()
+            break
+
+
+# ---------------------------------------------------------------------------
+# kpd process management
+# ---------------------------------------------------------------------------
+def _start_kpd():
+    global kpd_process
+    log.info("Starting kernel-patches-daemon...")
+    kpd_process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "kernel_patches_daemon",
+            "--label-colors=/app/configs/labels.json",
+            "--config=/app/configs/kpd.json",
+        ],
+    )
+    log.info("kpd started (PID=%d)", kpd_process.pid)
+
+
+def _stop_kpd():
+    global kpd_process
+    if kpd_process is not None and kpd_process.poll() is None:
+        log.info("Stopping kpd (PID=%d)...", kpd_process.pid)
+        kpd_process.terminate()
+        try:
+            kpd_process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            kpd_process.kill()
+            kpd_process.wait()
+        kpd_process = None
+
+
+# ---------------------------------------------------------------------------
+# Signal handling
+# ---------------------------------------------------------------------------
+def _shutdown_handler(signum, frame):
+    log.info("Caught signal %d — cleaning up...", signum)
+    shutdown_event.set()
+    heartbeat_stop.set()
+    _stop_kpd()
+    if held_lock:
+        delete_lock_file()
+    log.info("Shutdown complete")
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    global held_lock
+
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    signal.signal(signal.SIGINT, _shutdown_handler)
+
+    log.info("Cluster: %s", CLUSTER_NAME)
+    log.info("Lock repo: %s", LOCK_REPO)
+    log.info("Lock TTL: %ds | Heartbeat: %ds", LOCK_TTL, HEARTBEAT_INTERVAL)
+    log.info("Manual override (kpd_active): %s", KPD_ACTIVE)
+
+    while not shutdown_event.is_set():
+        if KPD_ACTIVE.lower() == "false":
+            log.info("Manual override: kpd_active=false — staying in standby")
+            shutdown_event.wait(HEARTBEAT_INTERVAL)
+            continue
+
+        if try_acquire():
+            held_lock = True
+
+            if kpd_process is None or kpd_process.poll() is not None:
+                _start_kpd()
+
+            heartbeat_stop.clear()
+            hb_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+            hb_thread.start()
+
+            # Wait for kpd to exit (crash or signal)
+            if kpd_process is not None:
+                kpd_process.wait()
+                log.info("kpd process exited (rc=%d)", kpd_process.returncode)
+
+            log.info("Stopping heartbeat and releasing lock")
+            heartbeat_stop.set()
+            hb_thread.join(timeout=HEARTBEAT_INTERVAL + 5)
+            delete_lock_file()
+            held_lock = False
+
+            log.info("Waiting %ds before retry...", RETRY_INTERVAL)
+            shutdown_event.wait(RETRY_INTERVAL)
+        else:
+            shutdown_event.wait(RETRY_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

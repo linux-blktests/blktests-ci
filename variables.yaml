@@ -35,6 +35,38 @@ mitmproxy_version: "11.1.3"
 #private_container_registry
 private_container_registry_size: "800Gi"
 
+#kernel-patches-daemon (kpd)
+# Optional: kpd is only deployed when kpd_github_app_id is defined in
+# secrets.enc. See the README for the full list of required secret variables.
+kpd_image_repo: "https://github.com/linux-blktests/kernel-patches-daemon.git"
+kpd_image_branch: "blktests"
+kpd_target_repo: "https://github.com/linux-blktests/linux-block"
+kpd_ci_repo: "https://github.com/linux-blktests/blktests-kpd-ci.git"
+kpd_ci_branch: "main"
+kpd_lock_repo: "linux-blktests/blktests-kpd-lock"
+kpd_lock_ttl_seconds: 1200
+kpd_heartbeat_interval_seconds: 300
+kpd_cluster_name: "cluster-1"  # unique name per cluster, change for each deployment
+# Set kpd_active to false to force this cluster into standby (manual override)
+# kpd_active: false
+# KPD Optional: Email notifications. Set kpd_smtp_host in secrets.enc to enable.
+# kpd_smtp_port: 465
+# kpd_smtp_tls: true
+# kpd_smtp_to: []
+# kpd_smtp_cc: []
+# kpd_smtp_http_proxy: null
+# kpd_smtp_submitter_allowlist: []
+# kpd_smtp_ignore_allowlist: false
+
 #The following vars are defined in `secrets.enc`:
 #longhorn_ui_auth_user
 #longhorn_ui_auth_password
+#kpd_github_app_id              (optional, enables kpd deployment)
+#kpd_github_app_installation_id (optional, enables kpd deployment)
+#kpd_github_app_private_key     (optional, enables kpd deployment)
+#kpd_patchwork_api_username      (optional, enables kpd deployment)
+#kpd_patchwork_api_token         (optional, enables kpd deployment)
+#kpd_smtp_host                   (optional, enables kpd email notifications)
+#kpd_smtp_from                   (optional, required when kpd_smtp_host is set)
+#kpd_smtp_user                   (optional, SMTP auth username)
+#kpd_smtp_pass                   (optional, SMTP auth password)

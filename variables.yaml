@@ -23,7 +23,7 @@ kubevirt_version: "v1.7.0"
 kubevirt_cri_version: "v1.64.0"
 
 #gha-runner-scale-set
-gha_rss_version: "0.13.1"
+gha_rss_version: "0.14.1"
 
 #mitmproxy
 # Optional: Set corporate_ca_cert_path to the path of your corporate SSL MITM

@@ -85,6 +85,21 @@
   register: arc_installed
   ignore_errors: true
 
+- name: Get installed ARC controller chart version
+  shell: helm list -n arc-systems -o json | python3 -c "import sys,json; entries=[e for e in json.load(sys.stdin) if e['name']=='arc']; print(entries[0]['chart'].split('-')[-1] if entries else '')"
+  register: arc_installed_version
+  when: arc_installed.rc == 0
+
+#https://helm.sh/docs/chart_best_practices/custom_resource_definitions/#some-caveats-and-explanations
+- name: "Update ARC controller CRDs (Helm does not update CRDs that already exist)"
+  shell: |
+    helm pull oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller \
+      --version {{ gha_rss_version }} --untar --untardir /tmp/arc-crds && \
+    kubectl apply --server-side --force-conflicts \
+      -f /tmp/arc-crds/gha-runner-scale-set-controller/crds/ && \
+    rm -rf /tmp/arc-crds
+  when: arc_installed.rc == 0 and arc_installed_version.stdout != gha_rss_version
+
 #https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners-with-actions-runner-controller/quickstart-for-actions-runner-controller
 - name: "Install the Actions Runner Controller, which is controlling all runner sets we will deploy"
   kubernetes.core.helm:
@@ -188,12 +203,6 @@
   vars:
     github_config_secret: "github-config-secret"
 
-- name: Check if arc-vm-* package is installed
-  shell: |
-    helm list -n gh-runner-{{ runner_set_name }} -q | grep -w arc-vm-{{ runner_set_name }}
-  register: arc_kernel_builder_installed
-  ignore_errors: true
-
 - name: Setup service account for kubevirt-actions-runner to manage VMs
   kubernetes.core.k8s:
     state: present
@@ -207,4 +216,3 @@
     chart_version: "{{ gha_rss_version }}"
     chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
     values_files: "{{ lookup('ansible.builtin.env', 'HOME') }}/tmp-ansible/arc-vm-scale-set-values.yaml"
-  when: arc_kernel_builder_installed.rc != 0

@@ -8,6 +8,11 @@ githubConfigUrl: "{{ github_config_url }}"
 githubConfigSecret: "{{ github_config_secret }}"
 maxRunners: 3
 minRunners: 0
+scaleSetLabels:
+  - "arc-vm-{{ repo_name }}"
+{% for label in pci_device_labels | default([]) %}
+  - "{{ label }}"
+{% endfor %}
 {% if mitmproxy_enabled %}
 githubServerTLS:
   certificateFrom:

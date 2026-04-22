@@ -109,7 +109,8 @@
     chart_version: "{{ gha_rss_version }}"
     chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller
     values: "{{ arc_controller_proxy_values | default({}) }}"
-  when: arc_installed.rc != 0
+  when: arc_installed.rc != 0 or (arc_installed.rc == 0 and arc_installed_version.stdout != gha_rss_version)
+
 
 - name: "Create Kubernetes secret for the github_token of {{ runner_set_name }}"
   kubernetes.core.k8s:
@@ -190,6 +191,32 @@
               fi
             fi
           done
+
+- name: "Extract repo name from github_config_url (used for gha-runner-scale-set label)"
+  set_fact:
+    repo_name: "{{ github_config_url | urlsplit('path') | basename }}"
+
+- name: "Query KubeVirt CR for permitted PCI host devices"
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: KubeVirt
+    name: kubevirt
+    namespace: kubevirt
+  register: kubevirt_cr
+
+- name: "Collect permitted PCI device resource names from KubeVirt CR"
+  set_fact:
+    permitted_pci_devices: "{{ kubevirt_cr.resources[0].spec.configuration.permittedHostDevices.pciHostDevices | default([]) | map(attribute='resourceName') | unique | list }}"
+
+- name: "Query cluster nodes for allocatable resources"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: cluster_nodes
+
+- name: "Build PCI device labels from devices that are both permitted and allocatable (used for gha-runner-scale-set)"
+  set_fact:
+    pci_device_labels: "{{ cluster_nodes.resources | map(attribute='status.allocatable', default={}) | map('dict2items') | flatten | selectattr('key', 'in', permitted_pci_devices) | selectattr('value', '!=', '0') | map(attribute='key') | map('regex_replace', '^devices.kubevirt.io/', '') | unique | list }}"
 
 - name: "Ensure ~/tmp-ansible exists"
   file:

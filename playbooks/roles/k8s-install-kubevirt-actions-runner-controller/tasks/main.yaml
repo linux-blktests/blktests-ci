@@ -18,6 +18,36 @@
     kind: Namespace
     state: present
 
+- name: "Infer authentication method from prompted values"
+  set_fact:
+    use_github_app: "{{ (arc_github_app_id | default('') | length > 0) or (arc_github_app_installation_id | default('') | string | length > 0 and arc_github_app_installation_id | default('') | string != '') or (arc_github_app_private_key_path | default('') | length > 0) }}"
+    use_pat: "{{ github_token | default('') | length > 0 }}"
+
+- name: "Validate all GitHub App fields are provided"
+  assert:
+    that:
+      - arc_github_app_id | default('') | length > 0
+      - arc_github_app_installation_id | default('') | string | length > 0 and arc_github_app_installation_id | default('') | string != ''
+      - arc_github_app_private_key_path | default('') | length > 0
+    fail_msg: "Incomplete GitHub App credentials — please provide App ID, Installation ID and private key path"
+  when: use_github_app | bool
+
+- name: "Check for existing github-config-secret (reuse on redeploy)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: github-config-secret
+    namespace: "gh-runner-{{ runner_set_name }}"
+  register: existing_github_secret
+  when: not (use_github_app | bool) and not (use_pat | bool)
+
+- name: "Fail when no credentials provided and no existing secret found"
+  assert:
+    that:
+      - existing_github_secret.resources | length > 0
+    fail_msg: "No auth credentials provided and no existing github-config-secret found in namespace gh-runner-{{ runner_set_name }}. Please provide GitHub App credentials or a PAT."
+  when: not (use_github_app | bool) and not (use_pat | bool)
+
 - name: "Check if mitmproxy is deployed in the cluster"
   kubernetes.core.k8s_info:
     kind: ConfigMap
@@ -112,6 +142,21 @@
   when: arc_installed.rc != 0 or (arc_installed.rc == 0 and arc_installed_version.stdout != gha_rss_version)
 
 
+- name: "Create Kubernetes secret for GitHub App auth of {{ runner_set_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "github-config-secret"
+        namespace: "gh-runner-{{ runner_set_name }}"
+      data:
+        github_app_id: "{{ arc_github_app_id | string | b64encode }}"
+        github_app_installation_id: "{{ arc_github_app_installation_id | string | b64encode }}"
+        github_app_private_key: "{{ lookup('file', arc_github_app_private_key_path) | b64encode }}"
+  when: use_github_app | bool
+
 - name: "Create Kubernetes secret for the github_token of {{ runner_set_name }}"
   kubernetes.core.k8s:
     state: present
@@ -123,6 +168,7 @@
         namespace: "gh-runner-{{ runner_set_name }}"
       data:
         github_token: "{{ github_token | b64encode }}"
+  when: use_pat | bool
 
 - name: "Install docker-daemon-config configMap"
   kubernetes.core.k8s:

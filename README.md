@@ -296,11 +296,52 @@ The second main contribution of this project is to be able to spawn GitHub
 runner scale sets according to the [proposed architecture](##Architecture)
 for different GitHub projects.
 
-We need to generate a new fine-grained personal access token for the repository
-or organization, to allow the runner to pick up and process GitHub actions.
+ARC needs to authenticate against the GitHub API. Two methods are supported
+(see [GitHub docs](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/authenticate-to-the-api)).
+The playbook prompts for all credential fields; the authentication method is
+**inferred automatically** from which fields you fill in:
 
-Follow the steps from [here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
-and make the following least privilege choices (The token must be generated
+| Provide | Result |
+|---------|--------|
+| GitHub App ID + Installation ID + private key path | **GitHub App** auth (recommended) |
+| GitHub PAT | **Personal Access Token** auth |
+| Nothing (leave all auth fields empty) | Reuses the existing `github-config-secret` in the namespace (useful for redeploying) |
+
+### Option A — GitHub App authentication (recommended)
+
+1. **Create a GitHub App** owned by your organisation:
+   Navigate to your organisation's GitHub settings -> Developer settings ->
+   GitHub Apps -> New GitHub App.
+   - Set the Homepage URL to
+     `https://github.com/actions/actions-runner-controller`
+   - Deactivate Webhooks
+   - Under **Repository permissions** select:
+     - Administration: Read and write (required when `githubConfigUrl`
+       points to a repository, which is the typical setup)
+     - Metadata: Read-only
+   - Under **Organization permissions** select:
+     - Self-hosted runners: Read and write
+   - Click "Create GitHub App"
+   - Note the **App ID** (you will be prompted for it when running the
+     playbook)
+   - Scroll down, generate a **private key** and save the `.pem` file
+     (you will be prompted for its path)
+
+2. **Install the App** on your organisation:
+   In the left menu hit "Install App" and click "Install" for the
+   organisation. Under "Repository access" select the repositories that
+   the runner scale sets should serve (the repos used as `githubConfigUrl`).
+   Note the **installation ID** (last number in the URL).
+
+When running the playbook you will be prompted for the **App ID**,
+**Installation ID** and the **path to the `.pem` private key file**.
+
+### Option B — Personal Access Token (PAT)
+
+Generate a new fine-grained personal access token for the repository or
+organization. Follow the steps from
+[here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
+and make the following least privilege choices (the token must be generated
 within the personal settings while selecting the correct `Resource owner`):
 
 ```
@@ -328,6 +369,8 @@ For point 13  (Permissions) please select the following options for Repository
 
 Please always share the token only on a secure channel!
 
+### Repository configuration
+
 Configuration required by the GitHub repo that uses the self-hosted runner
 scale set:
 - Optionally: Prevent group of people to allow actions:
@@ -346,11 +389,18 @@ create and approve pull requests' -> Save
 (https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
 In the repository->settings->actions->general->workflow
 
-Finally, run the following command in the root of this repository and answer the
+### Running the playbook
+
+Run the following command in the root of this repository and answer the
 prompts to create the runner scale sets:
 ```
 ansible-playbook -i k8s-inventory.yaml playbooks/setup-github-runner-scale-set.yaml
 ```
+
+The playbook will prompt for the runner set name, repo URL and authentication
+credentials. Fill in either the GitHub App fields **or** the PAT field.
+Leave all auth fields empty to reuse the existing `github-config-secret`
+(e.g. when redeploying a runner scale set with updated configuration).
 
 The runner scale sets `arc-vm-<repo-name>` should now be visible in the
 Repo->Settings->Actions->Runners overview.

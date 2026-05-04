@@ -15,8 +15,21 @@
     - name: github_config_url
       prompt: GitHub repo URL that the runner set should serve
       private: false
+    - name: arc_github_app_id
+      prompt: "GitHub App ID (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      default: ""
+      private: false
+    - name: arc_github_app_installation_id
+      prompt: "GitHub App Installation ID (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      default: ""
+      private: false
+    - name: arc_github_app_private_key_path
+      prompt: "Path to GitHub App private key .pem file (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      default: ""
+      private: false
     - name: github_token
-      prompt: GitHub token
+      prompt: "GitHub PAT (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      default: ""
       private: false
   tasks:
     - name: "Install the kernel builder cron job for building nightly kernels"

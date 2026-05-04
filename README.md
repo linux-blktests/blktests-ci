@@ -256,7 +256,7 @@ that are provided by this project. To do so, run the following command on your
 workstation in the root of this repository:
 
 ```
-ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass
+ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass --ask-become-pass
 ```
 
 ### Allowing insecure access to the self-hosted container registry

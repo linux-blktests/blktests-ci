@@ -18,7 +18,7 @@ inputs:
     description: "VM directory of artifacts to upload"
     required: false
   host_devices:
-    description: "Comma-separated list of host device short names to attach to the VM (e.g. nvme-wdc-zn540,nvme-wdc-zn540,nvme-wdc-sn640). Duplicates request multiple devices of the same type. If empty, auto-discovers all available devices.kubevirt.io/* devices from node allocatable resources."
+    description: "Comma-separated list of host device short names to attach to the VM (e.g. nvme-wdc-zn540,nvme-wdc-zn540,nvme-wdc-sn640). Duplicates request multiple devices of the same type."
     required: false
     default: ""
 

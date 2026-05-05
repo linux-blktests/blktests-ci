@@ -48,22 +48,6 @@ function resolve_host_devices() {
       devices_json+="{\"name\":\"${name}\",\"deviceName\":\"devices.kubevirt.io/${dev}\"}"
     done
     devices_json+="]"
-  else
-    # Auto-discover PCI host devices: query KubeVirt CR for permitted
-    # pciHostDevices, then cross-reference with node allocatable resources
-    permitted=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o json \
-      | jq -c '[.spec.configuration.permittedHostDevices.pciHostDevices[].resourceName] | unique')
-    devices_json=$(./kubectl get nodes -o json | jq -c --argjson permitted "$permitted" '
-      [.items[].status.allocatable // {} | to_entries[]
-        | select(.key as $k | $permitted | index($k))
-        | select(.value != "0")]
-      | unique_by(.key)
-      | to_entries
-      | map({
-          name: (.value.key | ltrimstr("devices.kubevirt.io/") | . + "-0"),
-          deviceName: .value.key
-        })
-    ')
   fi
 
   export host_devices="${devices_json}"

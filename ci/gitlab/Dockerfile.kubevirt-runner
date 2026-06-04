@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# Image used as the GitLab CI job image for KubeVirt-backed kernel test jobs.
+# It bundles the provider-neutral kubevirt entrypoint, the VM Jinja2 templates
+# it renders, and the base tooling the entrypoint expects to be present
+# (kubectl/virtctl/logcli are still downloaded at runtime, version-matched to
+# the cluster). Build context is the repository root.
+
+# Grab a lean static docker CLI from the official image (no daemon).
+FROM docker:cli AS dockercli
+
+FROM docker.io/ubuntu:22.04
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive \
+    DEBCONF_NONINTERACTIVE_SEEN=true \
+    apt-get install --yes --quiet=2 \
+    ca-certificates \
+    curl \
+    file \
+    git \
+    j2cli \
+    jq \
+    sudo \
+    unzip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Docker CLI talks to the docker:dind service over TCP for kernel artifact
+# extraction (docker pull/save of the kernel containerdisk).
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+
+# kubevirt entrypoint, the vars it sources, and the VM templates it renders.
+COPY .github/actions/kubevirt-action/entrypoint.sh /opt/kubevirt-runner/entrypoint.sh
+COPY .github/actions/kubevirt-action/vars.sh /opt/kubevirt-runner/vars.sh
+COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-vm-init.sh.j2 /opt/kubevirt-runner/templates/fedora-vm-init.sh.j2
+COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 /opt/kubevirt-runner/templates/fedora-var-kernel-vm.yaml.j2
+
+RUN chmod +x /opt/kubevirt-runner/entrypoint.sh /opt/kubevirt-runner/vars.sh
+
+# The entrypoint resolves the VM templates from here when not running in-repo.
+ENV TEMPLATES_DIR=/opt/kubevirt-runner/templates

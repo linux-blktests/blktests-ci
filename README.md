@@ -429,6 +429,105 @@ kubectl delete ns gh-runner-<repo-name>
 
 ---
 
+## Creating GitLab runners (alternative to GitHub)
+
+In addition to the GitHub ARC path above, the same KubeVirt-on-demand
+architecture can be driven from a (self-managed) GitLab instance. This is
+implemented in parallel and does not affect the GitHub path: instead of the
+Actions Runner Controller, it deploys the official **GitLab Runner** with the
+**Kubernetes executor**, which provisions one ephemeral job pod per CI/CD job.
+Each job pod runs as the same `kubevirt-actions-runner` service account and can
+therefore spawn KubeVirt VMs.
+
+The relevant variables live under the `#gitlab-runner` section of
+`variables.yaml` (chart version, concurrency and the runner image name).
+
+### Create a runner and obtain its authentication token
+
+GitLab 16+ uses runner authentication tokens (the legacy registration-token
+workflow was removed in GitLab 18.0). Runner **tags are configured in the UI**
+when the runner is created, not in the deployment
+(https://docs.gitlab.com/ci/runners/runners_scope/#create-an-instance-runner-with-a-runner-authentication-token):
+
+1. In GitLab navigate to your project (or group/instance) ->
+   **Settings -> Build (or CI/CD) -> Runners -> New runner**.
+2. Set the **tags**. Use the tags the playbook prints for your cluster — these
+   are `kubevirt` plus one tag per PCI device that is both permitted by the
+   KubeVirt CR and allocatable on a node (e.g. `nvme-wdc-zn540`).
+3. Leave **Run untagged jobs** disabled so only `tags:`-matched jobs land on
+   this runner.
+4. Optionally lock the runner to the project and protect it.
+5. Click **Create runner** and copy the **runner authentication token**
+   (prefixed `glrt-`). You are prompted for it when running the playbook.
+
+### Repository configuration
+
+As with the GitHub path, harden the project so untrusted contributors cannot
+execute code on the self-hosted runner before review:
+- **Settings -> CI/CD -> Runners**: only expose this runner to the intended
+  project(s).
+- **Settings -> CI/CD -> General pipelines**: require approval / restrict
+  pipelines for merge requests from forks.
+- Review `.gitlab-ci.yml` changes for code injection and secret leaks, the same
+  way you would review GitHub workflows.
+
+### Running the playbook
+
+Run the following in the root of this repository and answer the prompts:
+```
+ansible-playbook -i k8s-inventory.yaml playbooks/setup-gitlab-runner-scale-set.yaml
+```
+
+The playbook prompts for the runner set name (the namespace becomes
+`gl-runner-<name>`), the GitLab instance URL and the runner authentication
+token. Leave the token empty to reuse the existing `gitlab-runner-secret`
+(e.g. when redeploying with updated configuration). It also builds and pushes
+the `kubevirt-runner` job image to the local registry.
+
+The runner should now appear under your project's
+**Settings -> CI/CD -> Runners** as online.
+
+### Using the runner from a pipeline
+
+Include the reusable KubeVirt CI template (the GitLab counterpart of the
+`kubevirt-action` composite action) from the consuming project's
+`.gitlab-ci.yml` and extend the hidden `.kubevirt` job:
+
+```yaml
+include:
+  - remote: 'https://raw.githubusercontent.com/linux-blktests/blktests-ci/main/ci/gitlab/kubevirt.gitlab-ci.yml'
+
+blktests:
+  extends: .kubevirt
+  tags: [kubevirt, nvme-wdc-zn540]
+  variables:
+    KUBEVIRT_KERNEL_VERSION: "6.18.0"
+    KUBEVIRT_HOST_DEVICES: "nvme-wdc-zn540,nvme-wdc-zn540"
+    KUBEVIRT_ARTIFACT_UPLOAD_DIR: "results"
+    KUBEVIRT_RUN_CMDS: |
+      cd blktests && ./check block
+```
+
+Test results, dmesg logs and kernel artifacts are exposed as job `artifacts:`.
+
+### Debug help
+The runner manager and job pods live in the `gl-runner-<name>` namespace:
+`kubectl get pods -n gl-runner-<name>`.
+VMs can be inspected via `kubectl get vmi --all-namespaces`.
+
+### Deleting a GitLab runner
+
+```
+helm delete gitlab-runner-<name> -n gl-runner-<name>
+kubectl delete secret gitlab-runner-secret -n gl-runner-<name>
+#Double check that everything is deleted:
+kubectl api-resources --verbs=list --namespaced -o name | xargs -n 1 kubectl get --show-kind --ignore-not-found -n gl-runner-<name>
+kubectl delete ns gl-runner-<name>
+```
+Also delete the runner in the GitLab UI (Settings -> CI/CD -> Runners).
+
+---
+
 ## Further notes and tips
 ### Accessing logs through Grafana Loki
 On your workstation query the admin password, which you should change on the

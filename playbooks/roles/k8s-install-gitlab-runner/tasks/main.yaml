@@ -1,0 +1,217 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+- include_vars: ../../../../variables.yaml
+
+- name: "Install kubernetes python package"
+  pip:
+    name: kubernetes
+    state: present
+
+- name: "Ensure the gl-runner-{{ runner_set_name }} namespace exists"
+  kubernetes.core.k8s:
+    name: gl-runner-{{ runner_set_name }}
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: "Infer whether a runner authentication token was provided"
+  set_fact:
+    use_token: "{{ gitlab_runner_token | default('') | length > 0 }}"
+
+- name: "Check for existing gitlab-runner-secret (reuse on redeploy)"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: gitlab-runner-secret
+    namespace: "gl-runner-{{ runner_set_name }}"
+  register: existing_runner_secret
+  when: not (use_token | bool)
+
+- name: "Fail when no token provided and no existing secret found"
+  assert:
+    that:
+      - existing_runner_secret.resources | length > 0
+    fail_msg: "No runner authentication token provided and no existing gitlab-runner-secret found in namespace gl-runner-{{ runner_set_name }}. Create a runner in the GitLab UI and supply its glrt- token."
+  when: not (use_token | bool)
+
+- name: "Check if mitmproxy is deployed in the cluster"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: mitmproxy-ca-cert
+    namespace: mitmproxy
+  register: mitmproxy_ca_configmap
+
+- name: "Set mitmproxy_enabled fact"
+  set_fact:
+    mitmproxy_enabled: "{{ mitmproxy_ca_configmap.resources | length > 0 }}"
+
+- name: "Copy mitmproxy CA cert ConfigMap to runner namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mitmproxy-ca-cert
+        namespace: gl-runner-{{ runner_set_name }}
+      data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
+  when: mitmproxy_enabled
+
+- name: "Create mitmproxy CA secret trusted by the runner manager for the GitLab server"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-runner-mitmproxy-certs
+        namespace: gl-runner-{{ runner_set_name }}
+      data:
+        "{{ gitlab_url | urlsplit('hostname') }}.crt": "{{ mitmproxy_ca_configmap.resources[0].data['mitmproxy-ca-cert.pem'] | b64encode }}"
+  when: mitmproxy_enabled
+
+- name: "Create the runner authentication token secret for {{ runner_set_name }}"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: gitlab-runner-secret
+        namespace: gl-runner-{{ runner_set_name }}
+      data:
+        runner-token: "{{ gitlab_runner_token | b64encode }}"
+        runner-registration-token: "{{ '' | b64encode }}"
+  when: use_token | bool
+
+#TODO: Introduce bash script parameter for .env file output
+- name: "Install prepare-nvme-devices configMap"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: prepare-nvme-devices
+        namespace: gl-runner-{{ runner_set_name }}
+      data:
+        prepare-nvme-devices.sh: |
+          #!/bin/bash
+          set -e
+          set -x
+          # ---- Loop over each NVMe ctrl to format them with one namespace
+          for ctrl in /dev/nvme[0-9]*; do
+            if [[ "$ctrl" =~ /dev/nvme[0-9]+$ ]]; then
+              sudo nvme delete-ns $ctrl -n 0xffffffff
+              sudo nvme format $ctrl -n 0xffffffff -l 0 -f
+
+              sudo nvme create-ns -s 1 -c 1 -f 1 -d 0 --csi=0 $ctrl
+              sudo nvme attach-ns $ctrl -n 1 -c 0
+              FORMAT=$(sudo nvme id-ns ${ctrl}n1 | grep lbaf | grep ms:0 | grep lbads:9 | grep rp:0 | awk '{print $2}')
+
+              sudo nvme delete-ns $ctrl -n 0xffffffff
+              SIZE=$(sudo nvme id-ctrl $ctrl --output-format=json | jq -r '{tnvmcap} | .[]' | awk '{print $1/512}')
+              if sudo nvme effects-log $ctrl -c 0x02 --output-format=json | jq -r '.[] | {io_cmd_set}' | grep -iq zone ; then
+                #ZNS
+                sudo nvme create-ns -s $SIZE -c $SIZE -f $FORMAT -d 0 --csi=2 $ctrl
+              else
+                #NVM
+                sudo nvme create-ns -s $SIZE -c $SIZE -f $FORMAT -d 0 --csi=0 $ctrl
+              fi
+              sudo nvme attach-ns $ctrl -n 1 -c 0
+            fi
+          done
+
+          ZBDCOUNTER=0
+          BDEVCOUNTER=0
+          for ns in /dev/nvme[0-9]*; do
+            if [[ "$ns" =~ /dev/nvme[0-9]+n[0-9]+$ ]]; then
+              ctrl=$(echo $ns | sed 's/n[0-9]*$//')
+              if sudo nvme effects-log $ctrl -c 0x02 --output-format=json | jq -r '.[] | {io_cmd_set}' | grep -iq zone ; then
+                echo "ZBD${ZBDCOUNTER}=${ns}" >> /etc/environment
+                ZBDCOUNTER=$((ZBDCOUNTER+1))
+              else
+                echo "BDEV${BDEVCOUNTER}=${ns}" >> /etc/environment
+                BDEVCOUNTER=$((BDEVCOUNTER+1))
+              fi
+            fi
+          done
+
+- name: "Get private docker registry IP"
+  ansible.builtin.set_fact:
+    registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
+
+- name: "Build and push the kubevirt runner image (entrypoint + VM templates + tooling) used as the GitLab job image"
+  shell: |
+    docker build -t {{ registry_ip }}:32000/kubevirt-runner:latest \
+      -f {{ playbook_dir }}/../ci/gitlab/Dockerfile.kubevirt-runner \
+      {{ playbook_dir }}/..
+    docker push {{ registry_ip }}:32000/kubevirt-runner:latest
+
+- name: "Query KubeVirt CR for permitted PCI host devices"
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: KubeVirt
+    name: kubevirt
+    namespace: kubevirt
+  register: kubevirt_cr
+
+- name: "Collect permitted PCI device resource names from KubeVirt CR"
+  set_fact:
+    permitted_pci_devices: "{{ kubevirt_cr.resources[0].spec.configuration.permittedHostDevices.pciHostDevices | default([]) | map(attribute='resourceName') | unique | list }}"
+
+- name: "Query cluster nodes for allocatable resources"
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: cluster_nodes
+
+- name: "Build PCI device labels from devices that are both permitted and allocatable"
+  set_fact:
+    pci_device_labels: "{{ cluster_nodes.resources | map(attribute='status.allocatable', default={}) | map('dict2items') | flatten | selectattr('key', 'in', permitted_pci_devices) | selectattr('value', '!=', '0') | map(attribute='key') | map('regex_replace', '^devices.kubevirt.io/', '') | unique | list }}"
+
+- name: "Compose the recommended GitLab runner tags"
+  set_fact:
+    runner_tags: "{{ ['kubevirt'] + (pci_device_labels | default([])) }}"
+
+- name: "Recommended runner tags to set in the GitLab UI"
+  debug:
+    msg: >-
+      Runner authentication tokens configure tags server-side, so set these
+      tags when you create the runner in the GitLab UI (Settings -> CI/CD ->
+      Runners): {{ runner_tags | join(', ') }}. Reference them with `tags:` in
+      your .gitlab-ci.yml jobs to target this kubevirt runner and the PCI
+      devices it exposes.
+
+- name: "Setup service account for GitLab job pods to manage KubeVirt VMs"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/kubevirt-actions-runner-rbac.yaml.j2
+
+- name: "Ensure ~/tmp-ansible exists"
+  file:
+    path: "~/tmp-ansible"
+    state: directory
+
+- name: "Generate gitlab-runner-values.yaml from template"
+  template:
+    src: gitlab-runner-values.yaml.j2
+    dest: ~/tmp-ansible/gitlab-runner-values.yaml
+
+- name: "Add the GitLab Helm repository"
+  kubernetes.core.helm_repository:
+    name: gitlab
+    repo_url: "{{ gitlab_runner_helm_chart_url }}"
+
+- name: "Install the GitLab Runner (Kubernetes executor) for {{ runner_set_name }}. This runner builds kernels and spawns KubeVirt VMs on demand from GitLab CI/CD jobs"
+  kubernetes.core.helm:
+    name: "gitlab-runner-{{ runner_set_name }}"
+    release_namespace: "gl-runner-{{ runner_set_name }}"
+    create_namespace: true
+    chart_ref: gitlab/gitlab-runner
+    chart_version: "{{ gitlab_runner_version }}"
+    values_files: "{{ lookup('ansible.builtin.env', 'HOME') }}/tmp-ansible/gitlab-runner-values.yaml"

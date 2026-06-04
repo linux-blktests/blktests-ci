@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# Helm values for the official GitLab Runner chart (gitlab/gitlab-runner).
+# The Kubernetes executor creates one ephemeral pod per CI/CD job, which is the
+# GitLab equivalent of a GitHub ARC runner scale set. Each job pod runs as the
+# kubevirt-actions-runner service account so it can spawn KubeVirt VMs.
+
+gitlabUrl: "{{ gitlab_url }}"
+
+# Global cap on concurrently running CI job pods scheduled by this manager.
+concurrent: {{ gitlab_runner_concurrent | default(3) }}
+
+# Let the chart create the runner *manager* service account and a namespaced
+# Role allowing it to create/manage the job pods. The job pods themselves run
+# as the separate kubevirt-actions-runner service account (see config below).
+rbac:
+  create: true
+serviceAccount:
+  create: true
+
+{% if mitmproxy_enabled %}
+# Trust the mitmproxy CA on the runner manager so it can reach the GitLab API
+# through the in-cluster TLS-inspecting proxy.
+certsSecretName: gitlab-runner-mitmproxy-certs
+
+# Route the runner manager's own egress (GitLab API polling) through mitmproxy.
+envVars:
+  - name: HTTP_PROXY
+    value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+  - name: HTTPS_PROXY
+    value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+  - name: NO_PROXY
+    value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+  - name: http_proxy
+    value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+  - name: https_proxy
+    value: "http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+  - name: no_proxy
+    value: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+{% endif %}
+
+runners:
+  # Reuse the pre-created secret holding the runner authentication token so
+  # that redeploys can omit the token (see the role tasks).
+  secret: gitlab-runner-secret
+  # Kubernetes executor configuration (config.toml). The multi-line string is
+  # rendered by Helm's tpl, but we only use static values here.
+  config: |
+    [[runners]]
+      name = "kubevirt-{{ runner_set_name }}"
+      url = "{{ gitlab_url }}"
+      executor = "kubernetes"
+{% if mitmproxy_enabled %}
+      # Job pod (build container) environment: route egress through mitmproxy
+      # and trust its CA. The CA bundle is mounted at /etc/mitmproxy via the
+      # config_map volume below. MITMPROXY_CA_CERT_PATH is consumed by the
+      # kubevirt entrypoint to inject the CA into the spawned VM.
+      environment = [
+        "HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080",
+        "HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080",
+        "NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local",
+        "http_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080",
+        "https_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080",
+        "no_proxy=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local",
+        "CURL_CA_BUNDLE=/etc/mitmproxy/ca-certificates.crt",
+        "SSL_CERT_FILE=/etc/mitmproxy/ca-certificates.crt",
+        "REQUESTS_CA_BUNDLE=/etc/mitmproxy/ca-certificates.crt",
+        "GIT_SSL_CAINFO=/etc/mitmproxy/ca-certificates.crt",
+        "NODE_EXTRA_CA_CERTS=/etc/mitmproxy/mitmproxy-ca-cert.pem",
+        "MITMPROXY_CA_CERT_PATH=/etc/mitmproxy/mitmproxy-ca-cert.pem",
+      ]
+{% endif %}
+      [runners.kubernetes]
+        namespace = "gl-runner-{{ runner_set_name }}"
+        # Required so the docker:dind service container can run.
+        privileged = true
+        # Job pods run as the KubeVirt-capable service account.
+        service_account = "kubevirt-actions-runner"
+        # Default job image (our kubevirt runner image). Consumers may override
+        # it with `image:` in their .gitlab-ci.yml.
+        image = "{{ kubevirt_runner_image }}"
+        # Mirror the resource envelope of the GitHub ARC runner pods.
+        cpu_request = "4"
+        cpu_limit = "4"
+        memory_request = "8Gi"
+        memory_limit = "8Gi"
+        service_cpu_request = "1"
+        service_cpu_limit = "2"
+        service_memory_request = "1Gi"
+        service_memory_limit = "4Gi"
+        helper_cpu_request = "250m"
+        helper_memory_request = "256Mi"
+        # KubeVirt VMs can take a while to come up; allow a generous poll window.
+        poll_timeout = 600
+{% if mitmproxy_enabled %}
+        [[runners.kubernetes.volumes.config_map]]
+          name = "mitmproxy-ca-cert"
+          mount_path = "/etc/mitmproxy"
+{% endif %}

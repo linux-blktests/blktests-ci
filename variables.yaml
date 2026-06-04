@@ -25,6 +25,19 @@ kubevirt_cri_version: "v1.64.0"
 #gha-runner-scale-set
 gha_rss_version: "0.14.1"
 
+#gitlab-runner
+# Optional: GitLab Runner support, deployed in parallel to the GitHub ARC path
+# via playbooks/setup-gitlab-runner-scale-set.yaml. Nothing here is used unless
+# that playbook is run; the GitHub path is unaffected.
+gitlab_runner_helm_chart_url: "https://charts.gitlab.io"
+gitlab_runner_version: "0.89.1"
+# Global number of concurrent CI job pods this runner manager may schedule.
+gitlab_runner_concurrent: 3
+# The kubevirt runner image is built from this repository and pushed to the
+# local registry by the gitlab-runner role. It is referenced through the k3s
+# registry mirror so kubelet can pull it on the cluster nodes.
+kubevirt_runner_image: "container-registry.local:5000/kubevirt-runner:latest"
+
 #mitmproxy
 # Optional: Set corporate_ca_cert_path to the path of your corporate SSL MITM
 # certificate PEM file to deploy mitmproxy in the cluster. When set, mitmproxy

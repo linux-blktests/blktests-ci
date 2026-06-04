@@ -109,6 +109,12 @@ function extract_test_artifacts_for_upload() {
 function extract_kernel_artifacts() {
   # We allow this step to fail, as we don't want to upload the kernel
   # artifacts multiple times in the same job.
+  # Nothing to extract when the VM booted its default kernel (no kernel_version
+  # supplied); exit non-zero to skip the artifact upload, like the dedup case.
+  if [ -z "${INPUT_KERNEL_VERSION:-}" ]; then
+    echo "No kernel_version supplied; skipping kernel artifact extraction."
+    exit 1
+  fi
   export kernel_version="${INPUT_KERNEL_VERSION}"
   dir="${KERNEL_ARTIFACTS_DIR:-${HOME}/kernel-artifacts}"
   if [[ -d "$dir" ]]; then

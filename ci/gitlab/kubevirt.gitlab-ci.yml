@@ -44,6 +44,8 @@
       command: ["--insecure-registry=registry-service.docker-registry.svc.cluster.local"]
   variables:
     # ---- User inputs (set these in the extending job) -------------------
+    # Kernel to boot. If left empty, the VM boots the cloud-image's default
+    # kernel and no custom kernel/modules are loaded or extracted.
     KUBEVIRT_KERNEL_VERSION: ""
     KUBEVIRT_RUN_CMDS: ""
     # Comma-separated host device short names, e.g. "nvme-wdc-zn540,nvme-wdc-sn640".

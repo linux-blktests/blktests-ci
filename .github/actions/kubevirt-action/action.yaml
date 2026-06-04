@@ -9,8 +9,9 @@ description: "Spwaning a KubeVirt VM in your k8s cluster via ARC"
 author: "Dennis Maisenbacher"
 inputs:
   kernel_version:
-    description: "Linux kernel version that the VM should startup with."
-    required: true
+    description: "Linux kernel version the VM should boot. If omitted, the VM boots the cloud-image's default kernel (no custom kernel or modules are loaded)."
+    required: false
+    default: ""
   run_cmds:
     description: "Commands that should be executed within the VM"
     required: true

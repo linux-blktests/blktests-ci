@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# Reusable GitLab CI/CD template for running commands inside an on-demand
+# KubeVirt VM, the GitLab counterpart of the .github/actions/kubevirt-action
+# composite action. Include it from a project served by the kubevirt GitLab
+# runner and extend the hidden `.kubevirt` job:
+#
+#   include:
+#     - project: 'linux-blktests/blktests-ci'
+#       file: '/ci/gitlab/kubevirt.gitlab-ci.yml'
+#
+#   blktests:
+#     extends: .kubevirt
+#     tags: [kubevirt, nvme-wdc-zn540]   # add the PCI device tags you need
+#     variables:
+#       KUBEVIRT_KERNEL_VERSION: "6.18.0"
+#       KUBEVIRT_HOST_DEVICES: "nvme-wdc-zn540,nvme-wdc-zn540"
+#       KUBEVIRT_ARTIFACT_UPLOAD_DIR: "results"
+#       KUBEVIRT_RUN_CMDS: |
+#         cd blktests && ./check block
+#
+# The runner deployment (playbooks/setup-gitlab-runner-scale-set.yaml) prints
+# the recommended `tags:` for your cluster.
+#
+# The kubevirt logic (entrypoint, vars.sh, VM templates) is refreshed from the
+# main branch of https://github.com/linux-blktests/blktests-ci at job start, so
+# changes are picked up without rebuilding the runner image. The image-baked
+# copy is used as a fallback when the clone is unavailable.
+
+.kubevirt:
+  image: container-registry.local:5000/kubevirt-runner:latest
+  tags:
+    - kubevirt
+  # Docker-in-Docker is only used for kernel artifact extraction (docker
+  # pull/save of the kernel containerdisk). The Kubernetes executor runs
+  # services in the same pod, so the daemon is reached over localhost.
+  services:
+    - name: docker:dind
+      alias: docker
+      command: ["--insecure-registry=registry-service.docker-registry.svc.cluster.local"]
+  variables:
+    # ---- User inputs (set these in the extending job) -------------------
+    KUBEVIRT_KERNEL_VERSION: ""
+    KUBEVIRT_RUN_CMDS: ""
+    # Comma-separated host device short names, e.g. "nvme-wdc-zn540,nvme-wdc-sn640".
+    # Duplicates request multiple devices of the same type.
+    KUBEVIRT_HOST_DEVICES: ""
+    # VM-relative directory whose contents are uploaded as job artifacts.
+    KUBEVIRT_ARTIFACT_UPLOAD_DIR: ""
+    # ---- Wiring (do not normally override) ------------------------------
+    # Map the friendly variables to the names the entrypoint expects.
+    INPUT_KERNEL_VERSION: "$KUBEVIRT_KERNEL_VERSION"
+    INPUT_RUN_CMDS: "$KUBEVIRT_RUN_CMDS"
+    INPUT_HOST_DEVICES: "$KUBEVIRT_HOST_DEVICES"
+    # Talk to the docker:dind service over plain TCP (shared pod localhost).
+    DOCKER_HOST: "tcp://localhost:2375"
+    DOCKER_TLS_CERTDIR: ""
+    # Keep kernel artifacts inside the workspace so they can be uploaded.
+    KERNEL_ARTIFACTS_DIR: "$CI_PROJECT_DIR/kernel-artifacts"
+  before_script:
+    # Refresh the kubevirt logic (entrypoint, vars.sh, VM templates) from the
+    # main branch of the upstream repo so changes are picked up without
+    # rebuilding the runner image. Overwrites the image-baked copy in place; if
+    # the clone fails the baked copy is used as a fallback.
+    - |
+      src="$(mktemp -d)"
+      if git clone --depth 1 --branch main https://github.com/linux-blktests/blktests-ci.git "$src"; then
+        install -m 0755 "$src/.github/actions/kubevirt-action/entrypoint.sh" /opt/kubevirt-runner/entrypoint.sh
+        install -m 0755 "$src/.github/actions/kubevirt-action/vars.sh"       /opt/kubevirt-runner/vars.sh
+        install -m 0644 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-*.j2 /opt/kubevirt-runner/templates/
+        echo "kubevirt CI logic synced from linux-blktests/blktests-ci@main"
+      else
+        echo "WARNING: failed to clone linux-blktests/blktests-ci@main; using image-baked logic."
+      fi
+      rm -rf "$src"
+    - /opt/kubevirt-runner/entrypoint.sh install_requirements
+  script:
+    - /opt/kubevirt-runner/entrypoint.sh run_ssh_cmds
+  after_script:
+    - /opt/kubevirt-runner/entrypoint.sh extract_test_artifacts_for_upload "$KUBEVIRT_ARTIFACT_UPLOAD_DIR" || true
+    - /opt/kubevirt-runner/entrypoint.sh extract_dmesg_logs || true
+    - /opt/kubevirt-runner/entrypoint.sh extract_kernel_artifacts || true
+    - /opt/kubevirt-runner/entrypoint.sh cleanup_vm || true
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+      - dmesg-logs/
+      - kernel-artifacts/

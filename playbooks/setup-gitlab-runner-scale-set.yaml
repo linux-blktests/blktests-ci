@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+#TODO: Make VM resources configurable via vars_prompt
+- name: "Deploy a GitLab Runner (Kubernetes executor) that spawns KubeVirt VMs on demand from a GitLab CI/CD pipeline"
+  hosts: localhost
+  gather_facts: no
+  vars_prompt:
+    - name: runner_set_name
+      prompt: Suffix of the GitLab runner deployment (namespace gl-runner-<suffix>)
+      private: false
+    - name: gitlab_url
+      prompt: "URL of the (self-managed) GitLab instance the runner registers against (e.g. https://gitlab.example.com)"
+      private: false
+    - name: gitlab_runner_token
+      prompt: "GitLab runner authentication token (glrt-...) created in the GitLab UI (or leave empty to reuse the existing secret)"
+      default: ""
+      private: false
+  tasks:
+    - name: "Install the kernel builder cron job for building nightly kernels"
+      include_role:
+        name: kernel-builder-k8s-job
+
+    - name: "Install GitLab Runner and its dependencies"
+      include_role:
+        name: k8s-install-gitlab-runner

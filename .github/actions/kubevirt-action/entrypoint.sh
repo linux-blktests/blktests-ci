@@ -61,14 +61,15 @@ function run_ssh_cmds() {
   export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
   export kernel_version="${INPUT_KERNEL_VERSION}"
 
-  if [ -f /etc/ssl/certs/mitmproxy-ca-cert.pem ]; then
-    export mitmproxy_ca_cert=$(cat /etc/ssl/certs/mitmproxy-ca-cert.pem)
+  mitmproxy_ca_cert_path="${MITMPROXY_CA_CERT_PATH:-/etc/ssl/certs/mitmproxy-ca-cert.pem}"
+  if [ -f "$mitmproxy_ca_cert_path" ]; then
+    export mitmproxy_ca_cert=$(cat "$mitmproxy_ca_cert_path")
   fi
 
   resolve_host_devices
 
   # Render cloud-init script and create a ConfigMap for the VM to consume via virtiofs
-  j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-vm-init.sh.j2 -o init.sh
+  j2 ${TEMPLATES_DIR}/fedora-vm-init.sh.j2 -o init.sh
   ./kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | ./kubectl apply -f -
 
   # Write YAML data file for VM template rendering (host_devices is a JSON
@@ -81,7 +82,7 @@ host_devices: ${host_devices}
 EOF
 
   # Render and create VM
-  j2 $(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 vm-data.yaml -o vm.yml
+  j2 ${TEMPLATES_DIR}/fedora-var-kernel-vm.yaml.j2 vm-data.yaml -o vm.yml
   ./kubectl create -f vm.yml
   ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
   while true; do
@@ -109,7 +110,7 @@ function extract_kernel_artifacts() {
   # We allow this step to fail, as we don't want to upload the kernel
   # artifacts multiple times in the same job.
   export kernel_version="${INPUT_KERNEL_VERSION}"
-  dir="${HOME}/kernel-artifacts"
+  dir="${KERNEL_ARTIFACTS_DIR:-${HOME}/kernel-artifacts}"
   if [[ -d "$dir" ]]; then
     if ls ${dir}/boot | grep ${kernel_version}; then
       echo "Kernel artifacts already extracted. Skipping..."
@@ -152,7 +153,12 @@ function cleanup_vm() {
 
 #TODO: use dind container that has kubectl and virtctl preinstalled
 set -euxo pipefail
-source vars.sh
+source "$(dirname "$0")/vars.sh"
+
+# Directory holding the KubeVirt VM Jinja2 templates. Defaults to the in-repo
+# path used by the GitHub composite action; the kubevirt runner image consumed
+# by GitLab CI overrides it via the TEMPLATES_DIR environment variable.
+TEMPLATES_DIR="${TEMPLATES_DIR:-$(dirname "$0")/../../../playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates}"
 
 case "$1" in
   install_requirements)

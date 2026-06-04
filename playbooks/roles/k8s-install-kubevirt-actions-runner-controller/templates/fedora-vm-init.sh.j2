@@ -47,9 +47,11 @@ update-ca-trust
 
 mkdir -p /mnt/prepare-nvme-devices
 mount -t virtiofs prepare-nvme-devices /mnt/prepare-nvme-devices
+{% if kernel_version is defined and kernel_version %}
 mkdir -p /mnt/kernel-modules-disk
 mount /dev/sr0 /mnt/kernel-modules-disk
 tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
+{% endif %}
 modprobe tun
 loginctl enable-linger fedora
 

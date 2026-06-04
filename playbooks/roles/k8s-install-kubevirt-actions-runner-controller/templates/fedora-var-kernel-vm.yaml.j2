@@ -17,6 +17,7 @@ spec:
       architecture: amd64
       terminationGracePeriodSeconds: 30
       domain:
+{% if kernel_version is defined and kernel_version %}
         firmware:
           kernelBoot:
             container:
@@ -25,6 +26,7 @@ spec:
               kernelPath: /boot/vmlinux-{{ kernel_version }}
               imagePullPolicy: Always
             kernelArgs: "loglevel=7 no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root=/dev/vda4 rootflags=subvol=root"
+{% endif %}
         devices:
           filesystems:
             - name: prepare-nvme-devices
@@ -38,9 +40,11 @@ spec:
             - name: cloudinitdisk
               disk:
                 bus: virtio
+{% if kernel_version is defined and kernel_version %}
             - name: kernel-modules
               cdrom:
                 bus: sata
+{% endif %}
           interfaces:
             - name: default
               masquerade: {}
@@ -63,11 +67,13 @@ spec:
         - name: containerdisk
           containerDisk:
             image: quay.io/containerdisks/fedora:42
+{% if kernel_version is defined and kernel_version %}
         - name: kernel-modules
           containerDisk:
             image: container-registry.local:5000/linux-kernel-containerdisk:{{ kernel_version }}
             path: /boot/kernel-modules.isofs
             imagePullPolicy: Always
+{% endif %}
         - name: prepare-nvme-devices
           configMap:
             name: prepare-nvme-devices

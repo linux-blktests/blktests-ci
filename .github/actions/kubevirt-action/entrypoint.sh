@@ -79,6 +79,7 @@ vm_name: "${vm_name}"
 kernel_version: "${kernel_version}"
 vm_ssh_authorized_keys: "${vm_ssh_authorized_keys}"
 host_devices: ${host_devices}
+container_disk_image: "${container_disk_image}"
 EOF
 
   # Render and create VM

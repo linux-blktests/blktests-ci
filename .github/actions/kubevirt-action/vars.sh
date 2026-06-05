@@ -32,3 +32,10 @@ else
 fi
 export vm_user="fedora"
 export ssh_options=(--identity-file=$(realpath ./identity | xargs) --local-ssh-opts="-o StrictHostKeyChecking=no")
+
+# Container disk image backing the VM's root volume. Optional override exposed
+# to both CI providers (GitHub: the `container_disk_image` action input; GitLab:
+# the `KUBEVIRT_CONTAINER_DISK_IMAGE` variable), both surfaced here as
+# INPUT_CONTAINER_DISK_IMAGE. When left empty the VM template falls back to its
+# pinned default.
+export container_disk_image="${INPUT_CONTAINER_DISK_IMAGE:-}"

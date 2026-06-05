@@ -66,7 +66,7 @@ spec:
       volumes:
         - name: containerdisk
           containerDisk:
-            image: quay.io/containerdisks/fedora:42
+            image: {{ container_disk_image | default('quay.io/containerdisks/fedora:42', true) }}
 {% if kernel_version is defined and kernel_version %}
         - name: kernel-modules
           containerDisk:

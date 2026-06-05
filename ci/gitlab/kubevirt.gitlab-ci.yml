@@ -53,11 +53,15 @@
     KUBEVIRT_HOST_DEVICES: ""
     # VM-relative directory whose contents are uploaded as job artifacts.
     KUBEVIRT_ARTIFACT_UPLOAD_DIR: ""
+    # Container disk image backing the VM root volume. If left empty, the VM
+    # uses the pinned default image from the VM template.
+    KUBEVIRT_CONTAINER_DISK_IMAGE: ""
     # ---- Wiring (do not normally override) ------------------------------
     # Map the friendly variables to the names the entrypoint expects.
     INPUT_KERNEL_VERSION: "$KUBEVIRT_KERNEL_VERSION"
     INPUT_RUN_CMDS: "$KUBEVIRT_RUN_CMDS"
     INPUT_HOST_DEVICES: "$KUBEVIRT_HOST_DEVICES"
+    INPUT_CONTAINER_DISK_IMAGE: "$KUBEVIRT_CONTAINER_DISK_IMAGE"
     # Talk to the docker:dind service over plain TCP (shared pod localhost).
     DOCKER_HOST: "tcp://localhost:2375"
     DOCKER_TLS_CERTDIR: ""

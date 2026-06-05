@@ -22,6 +22,10 @@ inputs:
     description: "Comma-separated list of host device short names to attach to the VM (e.g. nvme-wdc-zn540,nvme-wdc-zn540,nvme-wdc-sn640). Duplicates request multiple devices of the same type."
     required: false
     default: ""
+  container_disk_image:
+    description: "Container disk image backing the VM's root volume. If omitted, defaults to the pinned Fedora cloud image from the VM template."
+    required: false
+    default: ""
 
 outputs:
   stdout:
@@ -50,6 +54,7 @@ runs:
         INPUT_KERNEL_VERSION: "${{ inputs.kernel_version }}"
         INPUT_RUN_CMDS: "${{ inputs.run_cmds }}"
         INPUT_HOST_DEVICES: "${{ inputs.host_devices }}"
+        INPUT_CONTAINER_DISK_IMAGE: "${{ inputs.container_disk_image }}"
     - name: Create timestamp env var for artifact uploads
       shell: bash
       run: |

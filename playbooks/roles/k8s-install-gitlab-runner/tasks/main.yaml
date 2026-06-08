@@ -126,6 +126,15 @@
             fi
           done
 
+          udevadm settle
+          for ctrl in /dev/nvme[0-9]*; do
+            [[ "$ctrl" =~ /dev/nvme[0-9]+$ ]] || continue
+            for _ in $(seq 1 50); do
+              [ -b "${ctrl}n1" ] && break
+              sleep 0.1
+            done
+          done
+
           ZBDCOUNTER=0
           BDEVCOUNTER=0
           for ns in /dev/nvme[0-9]*; do

@@ -154,7 +154,7 @@
   ansible.builtin.set_fact:
     registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
 
-- name: "Build and push the kubevirt runner image (entrypoint + VM templates + tooling) used as the GitLab job image"
+- name: "Build and push the kubevirt runner image (entrypoint + VM templates + base tooling) used as the GitLab job image"
   shell: |
     docker build -t {{ registry_ip }}:32000/kubevirt-runner:latest \
       -f {{ playbook_dir }}/../ci/gitlab/Dockerfile.kubevirt-runner \

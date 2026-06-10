@@ -5,23 +5,79 @@
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
 
+# Normalize a Kubernetes-style version string to vMAJOR.MINOR.PATCH.
+function _norm_ver() {
+  echo "$1" | sed -E 's/^(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/'
+}
+
+# Download <url> and install it onto PATH as /usr/local/bin/<name> (executable).
+function _install_bin() {
+  curl -fsSL -o "/tmp/$2" "$1"
+  sudo install -m 0755 "/tmp/$2" "/usr/local/bin/$2"
+  rm -f "/tmp/$2"
+}
+
+# In-cluster HTTP cache (deployed by the k8s-install-ci-binary-cache role) that
+# serves version-matched kubectl/virtctl/logcli. The default resolves over
+# cluster DNS and is covered by the runner pods' NO_PROXY, so it bypasses any
+# mitmproxy.
+CI_TOOLS_CACHE_URL="http://ci-bin-cache.ci-tools.svc.cluster.local"
+
+# Install <name> from the in-cluster cache onto PATH. Returns non-zero without
+# touching the system when the cache is unreachable or has not populated
+function _install_from_cache() {
+  local name="$1"
+  curl -fsSL -o "/tmp/${name}" "${CI_TOOLS_CACHE_URL}/${name}" || return 1
+  sudo install -m 0755 "/tmp/${name}" "/usr/local/bin/${name}" || { rm -f "/tmp/${name}"; return 1; }
+  rm -f "/tmp/${name}"
+}
+
+# kubectl: served from the cache pre-matched to the live server version. The
+# fallback bootstraps from the stable release and then installs the
+# server-matched build.
+function ensure_kubectl() {
+  command -v kubectl >/dev/null 2>&1 && return 0
+  _install_from_cache kubectl && return 0
+  echo "WARNING: CI binary cache unavailable; downloading kubectl from the internet." >&2
+  _install_bin "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" kubectl
+  local server
+  server="$(_norm_ver "$(kubectl version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty')")"
+  [ -n "$server" ] && _install_bin "https://dl.k8s.io/release/${server}/bin/linux/amd64/kubectl" kubectl
+}
+
+# virtctl: served from the cache pre-matched to the observed KubeVirt version.
+# The fallback queries the cluster and downloads the matching GitHub release.
+function ensure_virtctl() {
+  command -v virtctl >/dev/null 2>&1 && return 0
+  _install_from_cache virtctl && return 0
+  echo "WARNING: CI binary cache unavailable; downloading virtctl from the internet." >&2
+  local cluster
+  cluster="$(kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath='{.status.observedKubeVirtVersion}' 2>/dev/null || true)"
+  [ -n "$cluster" ] && _install_bin "https://github.com/kubevirt/kubevirt/releases/download/${cluster}/virtctl-${cluster}-linux-amd64" virtctl
+}
+
+# logcli is pinned (no cluster dependency). Prefer the cache, fall back to the
+# pinned GitHub release.
+function ensure_logcli() {
+  command -v logcli >/dev/null 2>&1 && return 0
+  _install_from_cache logcli && return 0
+  echo "WARNING: CI binary cache unavailable; downloading logcli from the internet." >&2
+  curl -fsSL -o /tmp/logcli.zip "https://github.com/grafana/loki/releases/download/${LOGCLI_VERSION:-v3.6.2}/logcli-linux-amd64.zip"
+  unzip -o /tmp/logcli.zip -d /tmp
+  sudo install -m 0755 /tmp/logcli-linux-amd64 /usr/local/bin/logcli
+  rm -f /tmp/logcli.zip /tmp/logcli-linux-amd64
+}
+
 function install_requirements() {
-  sudo apt-get update
-  sudo apt-get -y install curl j2cli unzip file
-
-  # Install stable kubectl, query kubernetes server version and install compatible kubectl version
-  curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-  sudo chmod +x kubectl
-  KUBE_SERVER_VERSION=$(./kubectl version -o json 2> /dev/null | jq -r '.serverVersion.gitVersion' | sed -E 's/^((v[0-9]+\.[0-9]+\.[0-9]+)).*/\1/')
-  curl -LO "https://dl.k8s.io/release/${KUBE_SERVER_VERSION}/bin/linux/amd64/kubectl"
-  sudo chmod +x kubectl
-
-  KUBEVIRT_VERSION=$(./kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath="{.status.observedKubeVirtVersion}")
-  curl -L -o virtctl "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64"
-  sudo chmod +x virtctl
-
-  curl -L -o logcli-linux-amd64.zip https://github.com/grafana/loki/releases/download/v3.6.2/logcli-linux-amd64.zip
-  unzip -o logcli-linux-amd64.zip
+  # Base tooling is baked into the kubevirt runner image; only install it when
+  # missing (e.g. on the GitHub actions-runner image).
+  if ! command -v j2 >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v file >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get -y install curl j2cli unzip file
+  fi
+  ensure_kubectl
+  ensure_virtctl
+  ensure_logcli
 }
 
 function resolve_host_devices() {
@@ -70,7 +126,7 @@ function run_ssh_cmds() {
 
   # Render cloud-init script and create a ConfigMap for the VM to consume via virtiofs
   j2 ${TEMPLATES_DIR}/fedora-vm-init.sh.j2 -o init.sh
-  ./kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | ./kubectl apply -f -
+  kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | kubectl apply -f -
 
   # Write YAML data file for VM template rendering (host_devices is a JSON
   # array which is valid YAML, so j2 parses it into a native list of dicts)
@@ -84,16 +140,16 @@ EOF
 
   # Render and create VM
   j2 ${TEMPLATES_DIR}/fedora-var-kernel-vm.yaml.j2 vm-data.yaml -o vm.yml
-  ./kubectl create -f vm.yml
-  ./kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
+  kubectl create -f vm.yml
+  kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
   while true; do
     echo "Waiting for VM to be up and running"
-    ./virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
+    virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
     sleep 10
   done
 
   run_cmds="${INPUT_RUN_CMDS}"
-  ./virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
+  virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
 }
 
 function extract_test_artifacts_for_upload() {
@@ -104,7 +160,7 @@ function extract_test_artifacts_for_upload() {
   vm_artifact_upload_dir="$1"
   rm -rf artifacts
   mkdir artifacts
-  ./virtctl scp "${ssh_options[@]}" -r ${vm_user}@vmi/${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
+  virtctl scp "${ssh_options[@]}" -r ${vm_user}@vmi/${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
 }
 
 function extract_kernel_artifacts() {
@@ -147,19 +203,18 @@ function extract_kernel_artifacts() {
 function extract_dmesg_logs() {
   rm -rf dmesg-logs
   mkdir dmesg-logs
-  ./kubectl describe vmi $vm_name > ./dmesg-logs/vmi-description.log
-  vmi_uid=$(./kubectl get vmi "${vm_name}" -o jsonpath='{.metadata.uid}')
-  log_pod_name=$(./kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -o jsonpath='{.items[0].metadata.name}')
-  since_time=$(./kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" --no-headers | awk 'NR==1{print $5}' | xargs)
-  ./logcli-linux-amd64 --addr=http://loki.logging.svc.cluster.local:3100 query "{container=\"guest-console-log\", pod=\"${log_pod_name}\"}" --limit=0 --since=${since_time} > ./dmesg-logs/dmesg.log
+  kubectl describe vmi $vm_name > ./dmesg-logs/vmi-description.log
+  vmi_uid=$(kubectl get vmi "${vm_name}" -o jsonpath='{.metadata.uid}')
+  log_pod_name=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -o jsonpath='{.items[0].metadata.name}')
+  since_time=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" --no-headers | awk 'NR==1{print $5}' | xargs)
+  logcli --addr=http://loki.logging.svc.cluster.local:3100 query "{container=\"guest-console-log\", pod=\"${log_pod_name}\"}" --limit=0 --since=${since_time} > ./dmesg-logs/dmesg.log
 }
 
 function cleanup_vm() {
-  ./kubectl delete -f vm.yml
-  ./kubectl delete configmap ${vm_name}-cloud-init --ignore-not-found=true
+  kubectl delete -f vm.yml
+  kubectl delete configmap ${vm_name}-cloud-init --ignore-not-found=true
 }
 
-#TODO: use dind container that has kubectl and virtctl preinstalled
 set -euxo pipefail
 source "$(dirname "$0")/vars.sh"
 

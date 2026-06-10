@@ -6,9 +6,10 @@
 
 # Image used as the GitLab CI job image for KubeVirt-backed kernel test jobs.
 # It bundles the provider-neutral kubevirt entrypoint, the VM Jinja2 templates
-# it renders, and the base tooling the entrypoint expects to be present
-# (kubectl/virtctl/logcli are still downloaded at runtime, version-matched to
-# the cluster). Build context is the repository root.
+# it renders, and the base tooling the entrypoint expects. The cluster tools
+# (kubectl/virtctl/logcli) are not baked in: the entrypoint fetches them at
+# runtime from the in-cluster binary cache (ci-tools namespace), which keeps
+# them version-matched to the live cluster. Build context is the repository root.
 
 # Grab a lean static docker CLI from the official image (no daemon).
 FROM docker:cli AS dockercli

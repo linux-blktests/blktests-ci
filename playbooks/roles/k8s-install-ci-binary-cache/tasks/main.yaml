@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# Deploys an in-cluster HTTP cache for the CI tooling (kubectl/virtctl/logcli).
+# Both the GitHub ARC and GitLab kubevirt runners fetch version-matched binaries
+# from this cache (over cluster DNS) instead of downloading them from the
+# internet on every job. A CronJob keeps the cache in sync with the live cluster
+# version. See templates/ci-binary-cache.yaml.j2 for the full topology.
+
+- include_vars: ../../../../variables.yaml
+
+- name: "Install kubernetes python package"
+  pip:
+    name: kubernetes
+    state: present
+
+- name: "Ensure the {{ ci_tools_namespace }} namespace exists"
+  kubernetes.core.k8s:
+    name: "{{ ci_tools_namespace }}"
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: "Check if mitmproxy is deployed in the cluster"
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    name: mitmproxy-ca-cert
+    namespace: mitmproxy
+  register: mitmproxy_ca_configmap
+
+- name: "Set mitmproxy_enabled fact"
+  set_fact:
+    mitmproxy_enabled: "{{ mitmproxy_ca_configmap.resources | length > 0 }}"
+
+- name: "Copy mitmproxy CA cert ConfigMap to the {{ ci_tools_namespace }} namespace"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mitmproxy-ca-cert
+        namespace: "{{ ci_tools_namespace }}"
+      data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
+  when: mitmproxy_enabled
+
+- name: "Create the cache reconcile-script ConfigMap (shared by the CronJob and the nginx warm-up initContainer)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: ci-bin-cache-updater
+        namespace: "{{ ci_tools_namespace }}"
+      data:
+        update.sh: "{{ lookup('file', 'update.sh') }}"
+
+- name: "Deploy the CI binary cache (PVC, RBAC, updater CronJob, nginx server)"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/ci-binary-cache.yaml.j2
+
+# The nginx pod's warm-up initContainer downloads the binaries on (re)deploy, so
+# the cache becomes available on its own shortly after the rollout. Wait for it
+# so a follow-up runner deployment can rely on the cache being warm.
+- name: "Wait for the CI binary cache to become available"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: ci-bin-cache
+    namespace: "{{ ci_tools_namespace }}"
+  register: ci_bin_cache_deploy
+  until: (ci_bin_cache_deploy.resources[0].status.availableReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
+  ignore_errors: true

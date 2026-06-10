@@ -1,0 +1,238 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# In-cluster cache for the CI tooling (kubectl/virtctl/logcli). The binaries
+# live on a volume on the default sc in the neutral {{ ci_tools_namespace }}
+# namespace and are served read-only over HTTP. CI runner jobs (GitHub ARC and
+# GitLab) fetch version-matched binaries from this LAN endpoint instead of the
+# internet, which is both faster and survives upstream outages.
+#
+# A CronJob (and the nginx initContainer on (re)deploy) reconciles the cached
+# binaries against the *live* cluster: kubectl is matched to the Kubernetes
+# server version, virtctl to the observed KubeVirt version, and logcli to the
+# pinned logcli_version. Downloads happen only when a version drifts, so steady
+# state is zero internet traffic.
+
+# Service account the updater (CronJob + nginx initContainer) runs as. It only
+# needs to read the Kubernetes server version (granted to all authenticated
+# accounts via system:discovery) and the KubeVirt CR (granted below).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ci-bin-cache
+  namespace: "{{ ci_tools_namespace }}"
+---
+# Allow the updater to read the KubeVirt CR so it can resolve the virtctl
+# version. The Role lives in the kubevirt namespace; the binding references the
+# service account in {{ ci_tools_namespace }} (RoleBindings may cross namespaces).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ci-bin-cache-kubevirt-reader
+  namespace: kubevirt
+rules:
+  - apiGroups: ["kubevirt.io"]
+    resources: ["kubevirts"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ci-bin-cache-kubevirt-reader
+  namespace: kubevirt
+subjects:
+  - kind: ServiceAccount
+    name: ci-bin-cache
+    namespace: "{{ ci_tools_namespace }}"
+roleRef:
+  kind: Role
+  name: ci-bin-cache-kubevirt-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Longhorn RWX volume holding the cached binaries. RWX so the long-running nginx
+# pod (read-only) and the periodic updater pods (read-write) can mount it
+# concurrently within this namespace.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ci-bin-cache
+  namespace: "{{ ci_tools_namespace }}"
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: "{{ ci_bin_cache_storage_class }}"
+  resources:
+    requests:
+      storage: "{{ ci_bin_cache_size }}"
+---
+# nginx serves the cached binaries read-only over HTTP. An initContainer runs
+# the reconcile script first so a freshly (re)deployed pod always comes up with
+# a warm, version-correct cache.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ci-bin-cache
+  namespace: "{{ ci_tools_namespace }}"
+  labels:
+    app: ci-bin-cache
+spec:
+  replicas: 1
+  # Avoid two writers racing on the PVC during rollouts; a brief cache outage
+  # only makes runners fall back to the internet.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ci-bin-cache
+  template:
+    metadata:
+      labels:
+        app: ci-bin-cache
+    spec:
+      serviceAccountName: ci-bin-cache
+      initContainers:
+        - name: warm-cache
+          image: ubuntu:22.04
+          # Best-effort: never block nginx from serving an existing/empty cache.
+          command:
+            - /bin/sh
+            - -c
+            - 'sh /scripts/update.sh || echo "WARNING: cache warm-up failed; serving whatever is present"'
+          env:
+            - name: LOGCLI_VERSION
+              value: "{{ logcli_version }}"
+{% if mitmproxy_enabled %}
+            - name: HTTP_PROXY
+              value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+            - name: HTTPS_PROXY
+              value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+            - name: NO_PROXY
+              value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+            - name: http_proxy
+              value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+            - name: https_proxy
+              value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+            - name: no_proxy
+              value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+{% endif %}
+          volumeMounts:
+            - name: cache
+              mountPath: /cache
+            - name: updater
+              mountPath: /scripts
+{% if mitmproxy_enabled %}
+            # Dropped into the trust-store source dir; the script runs
+            # update-ca-certificates to merge it into the system CA bundle.
+            - name: mitmproxy-ca-cert
+              mountPath: /usr/local/share/ca-certificates/mitmproxy-ca-cert.crt
+              subPath: mitmproxy-ca-cert.pem
+              readOnly: true
+{% endif %}
+      containers:
+        - name: nginx
+          image: nginx:stable-alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: cache
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: ci-bin-cache
+        - name: updater
+          configMap:
+            name: ci-bin-cache-updater
+{% if mitmproxy_enabled %}
+        - name: mitmproxy-ca-cert
+          configMap:
+            name: mitmproxy-ca-cert
+{% endif %}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ci-bin-cache
+  namespace: "{{ ci_tools_namespace }}"
+spec:
+  selector:
+    app: ci-bin-cache
+  ports:
+    - port: 80
+      targetPort: 80
+---
+# Periodic drift reconciliation. The initContainer handles deploy-time warm-up;
+# this keeps the cache correct as the cluster is upgraded over time.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ci-bin-cache-updater
+  namespace: "{{ ci_tools_namespace }}"
+spec:
+  schedule: "{{ ci_bin_cache_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ci-bin-cache
+          restartPolicy: OnFailure
+          containers:
+            - name: updater
+              image: ubuntu:22.04
+              command: ["/bin/sh", "/scripts/update.sh"]
+              env:
+                - name: LOGCLI_VERSION
+                  value: "{{ logcli_version }}"
+{% if mitmproxy_enabled %}
+                - name: HTTP_PROXY
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: HTTPS_PROXY
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: NO_PROXY
+                  value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+                - name: http_proxy
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: https_proxy
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: no_proxy
+                  value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+{% endif %}
+              volumeMounts:
+                - name: cache
+                  mountPath: /cache
+                - name: updater
+                  mountPath: /scripts
+{% if mitmproxy_enabled %}
+                # Dropped into the trust-store source dir; the script runs
+                # update-ca-certificates to merge it into the system CA bundle.
+                - name: mitmproxy-ca-cert
+                  mountPath: /usr/local/share/ca-certificates/mitmproxy-ca-cert.crt
+                  subPath: mitmproxy-ca-cert.pem
+                  readOnly: true
+{% endif %}
+          volumes:
+            - name: cache
+              persistentVolumeClaim:
+                claimName: ci-bin-cache
+            - name: updater
+              configMap:
+                name: ci-bin-cache-updater
+{% if mitmproxy_enabled %}
+            - name: mitmproxy-ca-cert
+              configMap:
+                name: mitmproxy-ca-cert
+{% endif %}

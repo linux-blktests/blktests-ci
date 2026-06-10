@@ -259,6 +259,10 @@ workstation in the root of this repository:
 ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass --ask-become-pass
 ```
 
+Among other components this also deploys the in-cluster CI binary cache (see
+[CI binary cache](#ci-binary-cache) below), which serves version-matched
+`kubectl`/`virtctl`/`logcli` to the runner jobs.
+
 ### Allowing insecure access to the self-hosted container registry
 
 We are self-hosting a container registry on the k8s cluster for kernel builds
@@ -529,6 +533,30 @@ Also delete the runner in the GitLab UI (Settings -> CI/CD -> Runners).
 ---
 
 ## Further notes and tips
+### CI binary cache
+The kubevirt runner jobs need `kubectl`, `virtctl` and `logcli`. Instead of
+downloading these from the internet on every job, they are cached in the cluster
+and served over HTTP from the `ci-tools` namespace (deployed by the
+`k8s-install-ci-binary-cache` role as part of `install-k8s-requirements.yaml`).
+
+The cache is backed by a Longhorn volume and kept correct by a `CronJob` that
+queries the live cluster and re-downloads a binary only when its version drifts:
+`kubectl` is matched to the Kubernetes server version, `virtctl` to the observed
+KubeVirt version, and `logcli` to the pinned `logcli_version` in
+`variables.yaml`. The kubevirt entrypoint fetches the binaries from
+`http://ci-bin-cache.ci-tools.svc.cluster.local` (covered by the runner pods'
+`NO_PROXY`, so mitmproxy is bypassed) and only falls back to a direct internet
+download if the cache is unreachable.
+
+Inspect or force-refresh the cache:
+```
+# Currently cached versions and binaries
+kubectl exec -n ci-tools deploy/ci-bin-cache -- sh -c 'cat /usr/share/nginx/html/versions.json; ls -l /usr/share/nginx/html'
+# Trigger an out-of-schedule reconcile
+kubectl create job -n ci-tools --from=cronjob/ci-bin-cache-updater ci-bin-cache-manual
+kubectl logs -n ci-tools job/ci-bin-cache-manual
+```
+
 ### Accessing logs through Grafana Loki
 On your workstation query the admin password, which you should change on the
 first login, and forward the port for Grafana:

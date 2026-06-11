@@ -32,6 +32,39 @@
     enabled: no
     state: stopped
 
+# Avoid the Longhorn admission-webhook bootstrap deadlock after a full-cluster
+# reboot: Longhorn registers failurePolicy=Fail webhooks covering the core "nodes"
+# resource; while Longhorn is down (no pod network yet) those webhooks have no
+# endpoints, so the API server rejects all Node updates and k3s/flannel can never
+# write its node annotations -> /run/flannel/subnet.env is never created -> no pod
+# gets networking -> Longhorn cannot start. The boot-time helper below relaxes the
+# webhooks to failurePolicy=Ignore so flannel can initialize; Longhorn restores
+# failurePolicy=Fail itself once healthy.
+- name: "Install Longhorn webhook-unblock helper script"
+  become: yes
+  copy:
+    src: longhorn-webhook-unblock.sh
+    dest: /usr/local/bin/longhorn-webhook-unblock.sh
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: "Install Longhorn webhook-unblock systemd unit"
+  become: yes
+  copy:
+    src: longhorn-webhook-unblock.service
+    dest: /etc/systemd/system/longhorn-webhook-unblock.service
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: "Enable Longhorn webhook-unblock service (runs on every boot)"
+  become: yes
+  ansible.builtin.systemd:
+    name: longhorn-webhook-unblock.service
+    daemon_reload: yes
+    enabled: yes
+
 - name: Grep for intel in cpuinfo
   shell: "cat /proc/cpuinfo | grep -ic intel"
   register: cpuinfo_intel_grep_output
@@ -73,12 +106,23 @@
     dest: "/etc/modprobe.d/iscsi-tcp.conf"
     mode: '0644'
 
-- name: Increase limits for inotify watches
+- name: "Persist inotify limits. The kernel default is exhausted by KubeVirt/Longhorn/CI density"
   become: yes
-  shell: |
-    sudo sysctl -w fs.inotify.max_user_watches=2099999999
-    sudo sysctl -w fs.inotify.max_user_instances=2099999999
-    sudo sysctl -w fs.inotify.max_queued_events=2099999999
+  copy:
+    dest: /etc/sysctl.d/99-inotify.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      fs.inotify.max_user_instances = 8192
+      fs.inotify.max_user_watches = 1048576
+      fs.inotify.max_queued_events = 16384
+  register: inotify_sysctl_file
+
+- name: "Apply inotify sysctl settings"
+  become: yes
+  ansible.builtin.command: sysctl --system
+  when: inotify_sysctl_file is changed
 
 - name: "K3s firewall rules for Fedora"
   become: yes

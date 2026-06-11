@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2025 Western Digital Corporation or its affiliates.
+#
+# Managed by Ansible (configure-physical-k8s-cluster-node role).
+# Relaxes the Longhorn admission webhooks on boot so a full-cluster reboot cannot
+# deadlock flannel/CNI. See /usr/local/bin/longhorn-webhook-unblock.sh for details.
+[Unit]
+Description=Relax Longhorn admission webhooks on boot to avoid flannel/CNI bootstrap deadlock
+After=k3s.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/longhorn-webhook-unblock.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

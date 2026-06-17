@@ -13,6 +13,20 @@ spec:
   template:
     metadata:
       name: runner
+{% if host_devices %}
+      annotations:
+        # A passed-through PCI device such as a SAS HBA exposes a legacy option
+        # ROM that the default SeaBIOS firmware executes during POST and hangs
+        # on, so the guest never reaches the kernel (empty serial console; ssh
+        # fails with "no route to host"). This onDefineDomain hook sets
+        # <rom bar='off'/> (rombar=0) on every PCI hostdev so SeaBIOS never runs
+        # the option ROM. EFI is not used because it bypasses kernelBoot (OVMF
+        # ignores the injected -kernel). Scoped to host-device VMs; the
+        # kubevirt-pci-rombar-hook ConfigMap is shipped by the runner-controller
+        # ansible role and the Sidecar feature gate must be enabled.
+        hooks.kubevirt.io/hookSidecars: |
+          [{"args": ["--version", "v1alpha2"], "configMap": {"name": "kubevirt-pci-rombar-hook", "key": "onDefineDomain", "hookPath": "/usr/bin/onDefineDomain"}}]
+{% endif %}
     spec:
       architecture: amd64
       terminationGracePeriodSeconds: 30
@@ -25,7 +39,11 @@ spec:
               initrdPath: /boot/initramfs-{{ kernel_version }}.img
               kernelPath: /boot/vmlinux-{{ kernel_version }}
               imagePullPolicy: Always
-            kernelArgs: "loglevel=7 no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root=/dev/vda4 rootflags=subvol=root"
+            # Use the btrfs root label (stable across Fedora cloud releases)
+            # rather than a hardcoded partition: fedora:42 puts root on vda4 but
+            # fedora:44 dropped the separate /boot and put it on vda3. Both label
+            # the root btrfs "fedora" with subvol=root.
+            kernelArgs: "loglevel=7 no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root=LABEL=fedora rootflags=subvol=root"
 {% endif %}
         devices:
           filesystems:

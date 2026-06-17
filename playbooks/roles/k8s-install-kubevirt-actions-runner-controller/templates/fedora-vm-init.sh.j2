@@ -55,7 +55,26 @@ tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
 modprobe tun
 loginctl enable-linger fedora
 
-dnf -y install podman jq nvme-cli
+dnf -y install podman jq nvme-cli sg3_utils lsscsi
+
+# Load the SAS HBA driver (mpt3sas) before enumerating block devices below:
+# host-managed SMR / ZBC disks behind a passed-through SAS HBA only appear in
+# /sys/block once mpt3sas binds the controller. Best-effort (|| true): a kernel
+# that genuinely lacks the driver must not abort this script (set -e).
+{% if kernel_version is defined and kernel_version %}
+# Custom kernel: mpt3sas ships in the kernel-modules disk extracted above (the
+# guest kernel must be built with CONFIG_SCSI_MPT3SAS). That disk includes its
+# own modules.dep, so modprobe resolves the module directly.
+modprobe mpt3sas || true
+{% else %}
+# Stock Fedora Cloud kernel: mpt3sas lives in kernel-modules(-extra), which the
+# cloud image omits, so pull it on demand for the running kernel.
+if ! modprobe mpt3sas 2>/dev/null; then
+  dnf -y install "kernel-modules-$(uname -r)" "kernel-modules-extra-$(uname -r)" || true
+  depmod "$(uname -r)" || true
+  modprobe mpt3sas || true
+fi
+{% endif %}
 
 cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh
 chmod +x /prepare-nvme-devices.sh

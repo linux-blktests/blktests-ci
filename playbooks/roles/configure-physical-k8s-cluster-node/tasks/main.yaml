@@ -98,6 +98,182 @@
     mode: '0644'
   when: is_intel is defined and is_intel
 
+# Bind every PCIe device KubeVirt may pass through to vfio-pci on boot.
+- name: "Collect PCI passthrough device IDs from the KubeVirt manifest"
+  set_fact:
+    vfio_config_ids: >-
+      {{ (lookup('file', playbook_dir + '/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml') | from_yaml)
+         .spec.configuration.permittedHostDevices.pciHostDevices
+         | default([]) | map(attribute='pciVendorSelector') | list }}
+
+- name: "Collect vfio ids already present on the running kernel cmdline"
+  set_fact:
+    vfio_existing_ids: >-
+      {{ ((ansible_cmdline['vfio-pci.ids'] | default('')) ~ ',' ~ (ansible_cmdline['vfio_pci.ids'] | default('')))
+         .split(',') | map('trim') | reject('equalto', '') | list }}
+
+- name: "Compute the merged, deduplicated vfio passthrough id list"
+  set_fact:
+    vfio_ids: "{{ (vfio_config_ids + vfio_existing_ids) | unique | sort }}"
+
+- name: "Select the IOMMU kernel args for this CPU vendor"
+  set_fact:
+    vfio_iommu_args: "{{ ['amd_iommu=on', 'iommu=pt'] if (is_amd | default(false)) else ['intel_iommu=on', 'iommu=pt'] }}"
+
+- name: "Assemble the vfio kernel cmdline fragment"
+  set_fact:
+    vfio_cmdline_args: "vfio-pci.ids={{ vfio_ids | join(',') }} {{ vfio_iommu_args | join(' ') }}"
+  when: vfio_ids | length > 0
+
+# A reboot is needed whenever the desired ids are not yet all on the running
+# cmdline, or the IOMMU is not enabled in the mode we want.
+- name: "Determine whether a reboot is required to apply the vfio binding"
+  set_fact:
+    vfio_reboot_required: >-
+      {{ (vfio_ids | difference(vfio_existing_ids) | length > 0)
+         or (ansible_cmdline['iommu'] | default('') != 'pt')
+         or ((is_amd | default(false)) and ansible_cmdline['amd_iommu'] | default('') != 'on')
+         or ((is_intel | default(false)) and ansible_cmdline['intel_iommu'] | default('') != 'on') }}
+  when: vfio_ids | length > 0
+
+- name: "Install GRUB vfio passthrough drop-in (Debian)"
+  become: yes
+  copy:
+    dest: /etc/default/grub.d/99-vfio-passthrough.cfg
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible (configure-physical-k8s-cluster-node role).
+      # Binds KubeVirt passthrough PCI devices to vfio-pci on boot; the id list
+      # is derived from pciHostDevices in kubevirt-config.yaml. Do not edit by
+      # hand - change the KubeVirt manifest and re-run the playbook instead.
+      GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX {{ vfio_cmdline_args }}"
+  register: vfio_grub_dropin
+  when:
+    - ansible_os_family == "Debian"
+    - vfio_ids | length > 0
+
+- name: "Regenerate GRUB config (Debian)"
+  become: yes
+  command: update-grub
+  when:
+    - ansible_os_family == "Debian"
+    - vfio_grub_dropin is changed
+
+- name: "Configure vfio passthrough on the kernel cmdline (RedHat)"
+  become: yes
+  command: grubby --update-kernel=ALL --args="{{ vfio_cmdline_args }}"
+  when:
+    - ansible_os_family == "RedHat"
+    - vfio_ids | length > 0
+    - vfio_reboot_required | default(false) | bool
+
+# Putting vfio-pci.ids on the kernel cmdline is necessary but NOT sufficient.
+# The native driver (mpt3sas for the Broadcom SAS HBAs above) is pulled into the
+# initramfs and binds the controller early in boot, before vfio-pci ever loads -
+# and vfio-pci will not take over an already-bound device. So the cmdline alone
+# silently loses the race for storage HBAs (the device comes up on mpt3sas after
+# a reboot). The tasks below close that gap: tell modprobe to load vfio-pci
+# *before* mpt3sas (and hand it the id list), and force the vfio modules into the
+# initramfs so that ordering actually applies during early boot.
+#
+# NOTE: the softdep is intentionally scoped to mpt3sas only. We deliberately do
+# NOT add one for nvme: if the node boots from an NVMe that shares a
+# vendor:device id with a passthrough NVMe, vfio-pci would also claim the boot
+# disk. NVMe passthrough on an NVMe-booting host needs separate, per-slot care.
+- name: "Install vfio-pci modprobe config (load before mpt3sas, claim passthrough ids)"
+  become: yes
+  copy:
+    dest: /etc/modprobe.d/vfio.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible (configure-physical-k8s-cluster-node role).
+      # Bind KubeVirt passthrough PCI devices to vfio-pci before the native
+      # driver can claim them. The id list is derived from pciHostDevices in
+      # kubevirt-config.yaml; do not edit by hand.
+      options vfio-pci ids={{ vfio_ids | join(',') }}
+      softdep mpt3sas pre: vfio-pci
+  register: vfio_modprobe_conf
+  when: vfio_ids | length > 0
+
+# Debian/Ubuntu (initramfs-tools): ship the vfio modules in the initramfs.
+- name: "Ensure vfio modules ship in the initramfs (Debian)"
+  become: yes
+  blockinfile:
+    path: /etc/initramfs-tools/modules
+    create: yes
+    marker: "# {mark} ANSIBLE MANAGED vfio passthrough"
+    block: |
+      vfio
+      vfio_iommu_type1
+      vfio_pci
+  register: vfio_initramfs_modules
+  when:
+    - ansible_os_family == "Debian"
+    - vfio_ids | length > 0
+
+- name: "Rebuild the initramfs so vfio loads early (Debian)"
+  become: yes
+  command: update-initramfs -u -k all
+  register: vfio_initramfs_rebuilt_debian
+  when:
+    - ansible_os_family == "Debian"
+    - vfio_ids | length > 0
+    - (vfio_initramfs_modules is changed) or (vfio_modprobe_conf is changed)
+
+# RedHat/Fedora (dracut): force the vfio modules into the initramfs. dracut also
+# bakes in /etc/modprobe.d, so the softdep + options above take effect in early
+# boot too. Regenerate every kernel's initramfs to match grubby --update-kernel=ALL.
+- name: "Install dracut vfio drop-in (RedHat)"
+  become: yes
+  copy:
+    dest: /etc/dracut.conf.d/vfio.conf
+    owner: root
+    group: root
+    mode: '0644'
+    content: |
+      # Managed by Ansible (configure-physical-k8s-cluster-node role).
+      force_drivers+=" vfio vfio_iommu_type1 vfio_pci "
+  register: vfio_dracut_conf
+  when:
+    - ansible_os_family == "RedHat"
+    - vfio_ids | length > 0
+
+- name: "Rebuild the initramfs so vfio loads early (RedHat)"
+  become: yes
+  command: dracut --force --regenerate-all
+  register: vfio_initramfs_rebuilt_redhat
+  when:
+    - ansible_os_family == "RedHat"
+    - vfio_ids | length > 0
+    - (vfio_dracut_conf is changed) or (vfio_modprobe_conf is changed)
+
+# A modprobe/initramfs change also requires a reboot, even when the kernel
+# cmdline itself did not change (e.g. the ids were already present from an
+# earlier partial run that only touched the bootloader).
+- name: "Require a reboot when the vfio modprobe/initramfs config changed"
+  set_fact:
+    vfio_reboot_required: true
+  when:
+    - vfio_ids | length > 0
+    - (vfio_modprobe_conf is defined and vfio_modprobe_conf is changed)
+      or (vfio_initramfs_rebuilt_debian is defined and vfio_initramfs_rebuilt_debian is changed)
+      or (vfio_initramfs_rebuilt_redhat is defined and vfio_initramfs_rebuilt_redhat is changed)
+
+- name: "Warn that a reboot is required to bind the new passthrough devices"
+  debug:
+    msg: >-
+      vfio-pci binding (kernel cmdline + initramfs) updated for
+      [{{ vfio_ids | join(', ') }}]. A reboot of this node is required for the
+      kernel to bind these devices to vfio-pci. Reboot when the cluster can
+      tolerate this node going down.
+  when:
+    - vfio_ids | length > 0
+    - vfio_reboot_required | default(false) | bool
+
 - name: "Ensure iscsi_tcp module is loaded on boot"
   become: yes
   copy:

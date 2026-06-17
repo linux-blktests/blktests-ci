@@ -17,8 +17,9 @@ spec:
       architecture: amd64
       terminationGracePeriodSeconds: 30
       domain:
-{% if kernel_version is defined and kernel_version %}
+{% if (kernel_version is defined and kernel_version) or host_devices %}
         firmware:
+{% if kernel_version is defined and kernel_version %}
           kernelBoot:
             container:
               image: container-registry.local:5000/linux-kernel-containerdisk:{{ kernel_version }}
@@ -26,6 +27,18 @@ spec:
               kernelPath: /boot/vmlinux-{{ kernel_version }}
               imagePullPolicy: Always
             kernelArgs: "loglevel=7 no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root=/dev/vda4 rootflags=subvol=root"
+{% endif %}
+{% if host_devices %}
+          # A passed-through PCI device such as a SAS HBA carries a legacy
+          # option ROM that the default SeaBIOS firmware executes during POST.
+          # The LSI SAS ROM hangs there, so the guest never reaches the kernel
+          # (empty serial console, and ssh fails with "no route to host"). Boot
+          # via EFI/OVMF instead, which does not run the legacy option ROM.
+          # Scoped to host-device VMs so plain VMs keep the default firmware.
+          bootloader:
+            efi:
+              secureBoot: false
+{% endif %}
 {% endif %}
         devices:
           filesystems:

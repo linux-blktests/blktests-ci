@@ -193,13 +193,17 @@ line) to force a cluster into permanent standby regardless of the lock
 state. This is useful during maintenance. Re-run the playbook after
 changing the value.
 
-Now is a great time to check on the cluster nodes that all PCIe devices that
-shall be passed to KubeVirt VMs (for CI testing) are rebound to the vfio
-driver on every startup (e.g. through kernel arguments).
-
-Next make sure to adjust the `kubevirt-config.yaml` to define the same PCIe
-devices from last step in `pciHostDevices`:
-`playbook/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`
+The set of PCIe devices that may be passed to KubeVirt VMs is declared once, in
+`pciHostDevices` in
+`playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`. That single
+list is the source of truth: the `configure-physical-k8s-cluster-node` play
+reads it and binds every listed device to the `vfio-pci` driver on each node at
+boot by deriving a `vfio-pci.ids=...` kernel argument from it (plus the IOMMU
+args for the node's CPU vendor) — no hand-editing of the bootloader required.
+Any vfio ids already present on a node's running kernel command line are merged
+in rather than overwritten, so manual/legacy entries and non-KubeVirt
+passthrough devices survive. New devices only take effect after the node is
+**rebooted**, so plan a reboot whenever you change `pciHostDevices`.
 
 ---
 
@@ -644,17 +648,73 @@ this repository to add another `pciHostDevices` entry. Use `lspci -n` to get
 the vendor and device ID of the PCIe device that should be consumed by
 KubeVirt VMs.
 
-Rebind the driver of the PCIe device in question to the vfio driver and adjust
-the options `vfio_pci.ids=VENDOR_ID0:DEVICE_ID0,VENDOR_ID1:DEVICE_ID1` to
-contain the new vendor and device ID.
+You do not rebind the driver by hand. The
+`configure-physical-k8s-cluster-node` play derives the `vfio-pci.ids=` kernel
+argument from the `pciHostDevices` list, so once the new ID is in the manifest,
+re-run the host configuration to bind it to `vfio-pci` on boot:
+```
+ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass --ask-become-pass
+```
+The new ID is merged into each node's kernel command line (existing ids are
+preserved); **reboot the node** for the kernel to actually bind the device to
+`vfio-pci`. The play prints a reminder whenever a reboot is pending. The merge
+is additive, so removing a device from `pciHostDevices` does not unbind it on
+the host — delete the id from the node's kernel command line by hand (the
+`/etc/default/grub.d/99-vfio-passthrough.cfg` drop-in on Debian, or
+`grubby --remove-args` on RedHat) and reboot if you need the host to reclaim it.
 
-After adjusting and committing the `kubevirt-config.yaml` file, apply(=update) it
-to the bare metal cluster from one of the control nodes.
+That same playbook run also re-applies the manifest to the running cluster so
+KubeVirt permits the device. To update only the cluster side without touching
+the host binding, apply it directly from one of the control nodes:
 ```
 kubectl apply -f kubevirt-config.yaml
 ```
 
 The new PCIe device can then be consumed in new KubeVirt deployments.
+
+#### Passing through SMR HDDs behind SAS HBAs
+Unlike the NVMe drives (e.g. the WDC ZN540), which are themselves PCIe
+endpoints that get rebound to `vfio-pci` individually, an SMR / host-managed
+(ZBC) HDD is a SAS/SATA disk sitting *behind* a SAS HBA. The PCIe endpoint is
+the **HBA**, not the disk, so passthrough happens at **HBA granularity**: the
+whole controller — and every disk attached to it — is handed to the VM.
+
+To pass through "an individual SMR disk", **connect each SMR disk to its own
+HBA** so that per-HBA passthrough is equivalent to per-disk passthrough. When
+binding the HBAs to `vfio-pci`, make sure that:
+- each HBA you pass through sits in its own IOMMU group
+  (`ls /sys/kernel/iommu_groups/`), and
+- the OS / Longhorn storage disks are **not** attached to any HBA you bind
+  (binding takes the disks away from the host).
+
+The Broadcom/LSI SAS 9400-series Tri-Mode HBAs are already declared in
+`kubevirt-config.yaml`, pooled under one resource name
+(`devices.kubevirt.io/hba-broadcom-sas34xx`) because several models share a PCI
+device ID and KubeVirt cannot tell them apart anyway. Confirm the IDs present
+on your hosts with:
+```
+lspci -nn -d 1000:
+```
+Add any missing IDs to `pciHostDevices`; the host configuration play then binds
+them to `vfio-pci` automatically by deriving `vfio-pci.ids=1000:00ac,...` from
+the manifest (see "Adding new PCIe devices" above). A node reboot applies it.
+
+Request the HBA like any other host device — the runner tag and
+`host_devices` / `KUBEVIRT_HOST_DEVICES` plumbing is device-agnostic. Because
+the resource is a pool, requesting it N times yields N (arbitrary) HBAs:
+```yaml
+blktests-smr:
+  extends: .kubevirt
+  tags: [kubevirt, hba-broadcom-sas34xx]
+  variables:
+    KUBEVIRT_HOST_DEVICES: "hba-broadcom-sas34xx"
+    KUBEVIRT_RUN_CMDS: |
+      cd blktests && ./check zbd
+```
+Inside the VM the (generalized) `prepare-nvme-devices.sh` discovers any
+host-managed/host-aware disk from `/sys/block/*/queue/zoned` and exports it as
+`ZBD<N>` in `/etc/environment`, exactly like an NVMe ZNS namespace. The guest
+kernel must provide `CONFIG_SCSI_MPT3SAS` and `CONFIG_BLK_DEV_ZONED`.
 
 ### How to access the Rook Ceph web UI
 On the workstation run in a separate shell:

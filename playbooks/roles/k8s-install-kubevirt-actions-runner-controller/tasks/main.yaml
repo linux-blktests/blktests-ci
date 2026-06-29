@@ -18,6 +18,13 @@
     kind: Namespace
     state: present
 
+- name: "Ensure the arc-systems namespace exists"
+  kubernetes.core.k8s:
+    name: arc-systems
+    api_version: v1
+    kind: Namespace
+    state: present
+
 - name: "Infer authentication method from prompted values"
   set_fact:
     use_github_app: "{{ (arc_github_app_id | default('') | length > 0) or (arc_github_app_installation_id | default('') | string | length > 0 and arc_github_app_installation_id | default('') | string != '') or (arc_github_app_private_key_path | default('') | length > 0) }}"

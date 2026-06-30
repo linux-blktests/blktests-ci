@@ -15,11 +15,20 @@ sanitize_k8s_name() {
 }
 
 if [ -n "${GITLAB_CI:-}" ]; then
+  # CI_JOB_ID is unique per job, including each leg of a parallel matrix job.
   repo_slug="$(sanitize_k8s_name "${CI_PROJECT_PATH:-}")"
   vm_suffix="$(sanitize_k8s_name "${CI_PIPELINE_ID:-}-${CI_JOB_ID:-}")"
 else
   repo_slug="$(sanitize_k8s_name "${GITHUB_REPOSITORY:-}")"
   vm_suffix="$(sanitize_k8s_name "${GITHUB_JOB:-}-${GITHUB_RUN_ID:-}")"
+  # GITHUB_JOB (the job id) and GITHUB_RUN_ID are identical for every leg of a
+  # strategy matrix, so this suffix alone collides across legs.
+  # RUNNER_NAME is the ephemeral runner pod name under Actions Runner Controller:
+  # unique per leg and deterministic across all of this job's steps.
+  if [ -n "${RUNNER_NAME:-}" ]; then
+    leg_hash="$(printf '%s' "${RUNNER_NAME}" | sha1sum | cut -c1-8)"
+    vm_suffix="${vm_suffix}-${leg_hash}"
+  fi
 fi
 
 # "vm-runner-" (10) + repo_slug + "-" (1) + vm_suffix must be <= 63 characters.

@@ -1,100 +1,216 @@
 # blktests-ci
-This is a collection of Ansible scripts to help bootstrap a k8s cloud
-environment with the focus on making PCIe devices available for testing.
 
-This project adds automated infrastructure for Continuous Integration (CI) to
-blktests and other projects, allowing to automatically execute the test suite
-when new storage related kernel contributions are proposed.
+A collection of Ansible playbooks that bootstrap a Kubernetes cluster geared
+towards kernel storage testing, with a focus on making PCIe devices available to
+test VMs.
 
-### 📝TODOs
-- kernel-builder-scale set is limited to 4 cpus and 8Gi memory
-  -> this should be configurable
-- Make the VM resources configurable (eg through instance types)
+The project provides Continuous Integration (CI) infrastructure for blktests and
+similar projects: it builds and tests a kernel on demand whenever a new
+storage-related kernel contribution is proposed, on real hardware.
+
+## Table of contents
+
+- [Architecture](#architecture)
+- [Getting started](#getting-started)
+  - [Install workstation dependencies](#install-workstation-dependencies)
+  - [Configure variables and secrets](#configure-variables-and-secrets)
+  - [Declare PCIe passthrough devices](#declare-pcie-passthrough-devices)
+  - [Install Kubernetes (k3s) on the nodes](#install-kubernetes-k3s-on-the-nodes)
+  - [Connect kubectl to your workstation](#connect-kubectl-to-your-workstation)
+  - [Install the Kubernetes CI requirements](#install-the-kubernetes-ci-requirements)
+  - [Allow the workstation to use the private registry](#allow-the-workstation-to-use-the-private-registry)
+- [Optional components](#optional-components)
+  - [Corporate proxy (mitmproxy)](#corporate-proxy-mitmproxy)
+  - [Kernel Patches Daemon (kpd)](#kernel-patches-daemon-kpd)
+- [GitHub runner scale sets](#github-runner-scale-sets)
+- [GitLab runners](#gitlab-runners)
+- [Operations and reference](#operations-and-reference)
+  - [CI binary cache](#ci-binary-cache)
+  - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
+  - [Use the private container registry](#use-the-private-container-registry)
+  - [Download a VM image](#download-a-vm-image)
+  - [Add PCIe passthrough devices](#add-pcie-passthrough-devices)
+  - [Access the Rook Ceph dashboard](#access-the-rook-ceph-dashboard)
+  - [Access the Longhorn dashboard](#access-the-longhorn-dashboard)
+  - [Upload a new KubeVirt cloud image](#upload-a-new-kubevirt-cloud-image)
+  - [Query the KubeVirt version](#query-the-kubevirt-version)
+  - [Update KubeVirt](#update-kubevirt)
+  - [Run virsh in a virt-launcher pod](#run-virsh-in-a-virt-launcher-pod)
+  - [Run an Ansible playbook inside a KubeVirt VM](#run-an-ansible-playbook-inside-a-kubevirt-vm)
+- [Roadmap](#roadmap)
 
 ## Architecture
-To achieve maximal flexibility and good resource utilization we decided to
-build a Kubernetes infrastructure that is capable of running multiple different
-kernel test workloads on the same set of hardware resources.
 
-The requirements for kernel testing are that we want to build and test a kernel
-on demand triggered by a single GitHub workflow.
-This workflow defines the exact kernel, test and on which physical devices
-the tests should be run on.
+The goal is to build and test a kernel on demand, triggered by a single CI
+workflow that defines the exact kernel, the test to run and the physical devices
+to run it on. To use the hardware efficiently, several different kernel test
+workloads share the same pool of nodes, scheduled by Kubernetes.
 
-We can't use a pre-registered self-hosted GitHub runner VM to simply
-pick up a workflow and install/reboot a new kernel because it would lose
-connection and fail the workflow. Nested VMs would be a possible solution,
-however, it lacks the good resource utilization.
+A pre-registered self-hosted GitHub runner VM cannot simply pick up a workflow
+and install or reboot into a new kernel: it would lose its connection to GitHub
+and fail the workflow. Nested VMs would work around this but waste resources.
+Instead, each job provisions a fresh KubeVirt VM on demand, boots the requested
+kernel inside it, runs the test, and tears the VM down afterwards.
 
-This figure illustrates the architecture:
+The following diagram illustrates the architecture:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./doc/blktests-ci-architecture-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="./doc/blktests-ci-architecture-light.png">
-  <img alt="Fallback image description" src="./doc/blktests-ci-architecture-light.png">
+  <img alt="blktests-ci architecture" src="./doc/blktests-ci-architecture-light.png">
 </picture>
 
 ## Getting started
----
 
-#### ⚠️ Warning
-These scripts are by no means production ready. Please continue with caution
-and expect the worst!
+> [!WARNING]
+> These playbooks are not production ready. Proceed with caution and expect the
+> worst.
 
-The setup was tested in a 3 node Dell-R6525 ubuntu-22.04 (deployed via MaaS)
-cluster connected via NVIDIA® Mellanox® ConnectX®-6 Dx SmartNICs and populated
-with multiple different NVMe™ SSDs used for testing.
-Each node has a 2 TB boot drive that is also used for non-critical cluster
-storage.
+The setup was tested on a three-node cluster of Dell R6525 machines running
+Ubuntu 22.04 (deployed via MAAS), connected with NVIDIA Mellanox ConnectX-6 Dx
+SmartNICs and populated with several different NVMe SSDs for testing. Each node
+has a 2 TB boot drive that also holds non-critical cluster storage.
 
-A Linux distribution is required to be installed on each of the nodes to
-continue with this guide.
+A Linux distribution must already be installed on each node before you start.
+Installing the bare-metal OS is out of scope for this project; tools such as
+MAAS or Proxmox can handle it.
 
----
+### Install workstation dependencies
 
-### Install dependencies
-The following tools need to be installed on the machine you want to orchestrate
-your cluster from. This machine will be referred to as 'workstation' from now
-on.
+Install the following on the machine you will orchestrate the cluster from
+(referred to as the *workstation* throughout this guide):
 
-- Python3 and Python3-pip
+- Python 3 and pip
 - Ansible
-- Docker (or Podman in combination with podman-docker)
+- Docker (or Podman with podman-docker)
 - kubectl
 - helm
-- virtctl (version must match with definition in `variables.yaml`)
-  (eg. [via the official release](https://kubevirt.io/user-guide/user_workloads/virtctl_client_tool/))
+- virtctl (the version must match the KubeVirt version in `variables.yaml`; see
+  the [official release](https://kubevirt.io/user-guide/user_workloads/virtctl_client_tool/))
 
 The workstation needs network access to the cluster nodes.
 
-### Prepare setup on workstation 
-Next please review the entries in the `variables.yaml` and run
-`ansible-vault create secrets.enc` to set the secret variables mentioned at the
-end of the variables file.
+### Configure variables and secrets
 
-The `secrets.enc` file should not be committed and can be edited via
-`ansible-vault edit secrets.enc`. Simply rerunning the scripts might not be
-sufficient to change the secret values.
+Review the entries in `variables.yaml`, then create the encrypted secrets file
+and set the secret variables listed at the end of `variables.yaml`:
 
-Now copy `k8s-inventory-template.yaml` to `k8s-inventory.yaml` and adjust the
-node-ips.
+```
+ansible-vault create secrets.enc
+```
 
-The bare metal OS installation on the cluster nodes is out of scope of this
-project. One could use Proxmox or similar software.
+Do not commit `secrets.enc`. Edit it later with `ansible-vault edit secrets.enc`;
+re-running the playbooks alone is not enough to change a secret value.
 
-### Corporate proxy / mitmproxy (optional)
+Copy the inventory template and fill in your node IPs:
+
+```
+cp k8s-inventory-template.yaml k8s-inventory.yaml
+```
+
+### Declare PCIe passthrough devices
+
+The set of PCIe devices that KubeVirt VMs may use is declared once, in
+`pciHostDevices` in
+`playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`. That list is
+the single source of truth. The `configure-physical-k8s-cluster-node` play reads
+it and binds every listed device to the `vfio-pci` driver on each node at boot,
+by deriving a `vfio-pci.ids=...` kernel argument from it (together with the IOMMU
+arguments for the node's CPU vendor). You do not edit the bootloader by hand.
+
+Any vfio IDs already present on a node's running kernel command line are merged
+in rather than overwritten, so manual or legacy entries and non-KubeVirt
+passthrough devices survive. New devices only take effect after the node is
+rebooted, so plan a reboot whenever you change `pciHostDevices`.
+
+To add a device after the initial setup, see
+[Add PCIe passthrough devices](#add-pcie-passthrough-devices).
+
+### Install Kubernetes (k3s) on the nodes
+
+Deploy a [k3s cluster](https://docs.k3s.io/quick-start) on the nodes.
+
+On the first node:
+```
+#https://docs.k3s.io/datastore/ha-embedded
+ufw disable
+curl -sfL https://get.k3s.io | sh -s - server --nonroot-devices --cluster-init
+cat /var/lib/rancher/k3s/server/node-token
+```
+
+On every other node:
+```
+ufw disable
+# K3S_TOKEN can be found on the first node at /var/lib/rancher/k3s/server/node-token
+curl -sfL https://get.k3s.io | K3S_TOKEN=<secret from first node> sh -s - server --nonroot-devices --server https://<ip or hostname of first node>:6443
+```
+
+The `--nonroot-devices` flag is required because Longhorn is later deployed on
+the bare-metal cluster. It sets `device_ownership_from_security_context` in
+containerd (see https://github.com/k3s-io/k3s/issues/11168).
+
+### Connect kubectl to your workstation
+
+Copy `/etc/rancher/k3s/k3s.yaml` from one of the cluster nodes to
+`~/.kube/config` on your workstation and replace `127.0.0.1` with the cluster
+node IP.
+
+Verify the connection:
+```
+kubectl get nodes
+```
+
+### Install the Kubernetes CI requirements
+
+Install the CI components provided by this project. Run this from the root of the
+repository on your workstation:
+
+```
+ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass --ask-become-pass
+```
+
+Among other components, this deploys the in-cluster CI binary cache (see
+[CI binary cache](#ci-binary-cache)), which serves version-matched `kubectl`,
+`virtctl` and `logcli` to the runner jobs.
+
+### Allow the workstation to use the private registry
+
+This project self-hosts a container registry on the cluster for kernel builds and
+other artifacts. The cluster was already configured to accept it by the previous
+step; now configure the workstation to push and pull from it. Edit
+`/etc/docker/daemon.json` on the workstation:
+
+```
+{
+  "insecure-registries": ["<k8s-node-ip>:32000"]
+}
+```
+
+Test the connection:
+```
+docker pull nginx:latest
+docker tag nginx:latest <k8s-node-ip>:32000/nginx:latest
+docker push <k8s-node-ip>:32000/nginx:latest
+```
+
+See [Use the private container registry](#use-the-private-container-registry) for
+how to reference these images from Kubernetes manifests and docker-in-docker.
+
+## Optional components
+
+### Corporate proxy (mitmproxy)
+
 If your cluster sits behind a corporate TLS-inspecting firewall, set
 `corporate_ca_cert_path` in `variables.yaml` to the path of the corporate CA
 certificate PEM file on the workstation. When this variable is defined, the
 `install-k8s-requirements.yaml` playbook will:
 
-1. Deploy **mitmproxy** as an in-cluster HTTPS proxy
+1. Deploy mitmproxy as an in-cluster HTTPS proxy
    (`mitmproxy.mitmproxy.svc.cluster.local:8080`).
-2. Generate a mitmproxy CA certificate and distribute it (via ConfigMap) to
-   all ARC runners, KubeVirt VMs and the kernel-builder CronJob.
-3. Configure proxy environment variables so that all CI traffic is routed
-   through mitmproxy, which handles upstream TLS verification using the
-   corporate CA.
+2. Generate a mitmproxy CA certificate and distribute it (via ConfigMap) to all
+   ARC runners, KubeVirt VMs and the kernel-builder CronJob.
+3. Configure proxy environment variables so all CI traffic is routed through
+   mitmproxy, which handles upstream TLS verification using the corporate CA.
 
 GitHub Actions workflows that run `docker build` against
 `Dockerfile.linux-kernel-containerdisk` should pass proxy build args so the
@@ -108,45 +224,44 @@ docker build \
   ...
 ```
 
-No SSL verification is disabled anywhere; the mitmproxy CA cert is installed
-into the trust store of every component that needs it.
+No SSL verification is disabled anywhere; the mitmproxy CA certificate is
+installed into the trust store of every component that needs it.
 
-### Kernel Patches Daemon / kpd (optional)
+### Kernel Patches Daemon (kpd)
+
 [kernel-patches-daemon](https://github.com/linux-blktests/kernel-patches-daemon/tree/blktests)
 (kpd) watches patchwork for new series sent to the linux-block mailing list,
-applies them on top of a GitHub repository and creates pull requests that
-trigger CI workflows.
+applies them on top of a GitHub repository and opens pull requests that trigger
+CI workflows.
 
 kpd is deployed automatically when `kpd_github_app_id` is defined in
 `secrets.enc`. To enable it:
-g
-1. **Create a GitHub App**:
-   Navigate to your organisation's GitHub settings -> Developer settings ->
-   GitHub Apps -> New GitHub App
-   - Pick a name. This will be the PR bots username
-   - Set the Homepage URL to your org's GitHub page
-   - Deactivate Webhooks
-   - Select the following Repository permissions:
-      - Contents: Read and write
-      - Issues: Read and write
-      - Pull requests: Read and write
-      - Workflows: Read and write
-   - Click "Create GitHub App"
-   - Note the App ID for the kpd_github_app_id secret
+
+1. **Create a GitHub App.** In your organisation's GitHub settings, go to
+   Developer settings -> GitHub Apps -> New GitHub App.
+   - Pick a name; this becomes the PR bot's username.
+   - Set the Homepage URL to your org's GitHub page.
+   - Deactivate Webhooks.
+   - Select these Repository permissions:
+     - Contents: Read and write
+     - Issues: Read and write
+     - Pull requests: Read and write
+     - Workflows: Read and write
+   - Click "Create GitHub App".
+   - Note the App ID for the `kpd_github_app_id` secret.
    - Scroll down, generate and note the private key for the
-     kpd_github_app_private_key secret
-   - In the left menu hit "Install APP" and klick "Install" for the
-     organisation you want to use. -> Install
-  - Select Repository access for kpd_target_repo and kpd_lock_repo
-  - Note down the installation ID (last part of the URL) for
-    kpd_github_app_installation_id
+     `kpd_github_app_private_key` secret.
+   - In the left menu hit "Install App" and click "Install" for the organisation
+     you want to use.
+   - Select repository access for `kpd_target_repo` and `kpd_lock_repo`.
+   - Note the installation ID (last part of the URL) for
+     `kpd_github_app_installation_id`.
 
 2. **Create the lock repository** `linux-blktests/blktests-kpd-lock` (or
-   whichever name is set in `kpd_lock_repo` in `variables.yaml`). This
-   repository is used for cross-cluster leader election. The GitHub App must
-   also have Contents read/write access to this repository. Initialize the
-   repository with a README or leave it empty — the lock file will be created
-   automatically.
+   whichever name is set in `kpd_lock_repo` in `variables.yaml`). It is used for
+   cross-cluster leader election. The GitHub App must have Contents read/write
+   access to this repository. Initialize it with a README or leave it empty; the
+   lock file is created automatically.
 
 3. **Add the secrets** to `secrets.enc` via `ansible-vault edit secrets.enc`:
    ```yaml
@@ -161,204 +276,96 @@ g
    ```
 
 4. **Set `kpd_cluster_name`** in `variables.yaml` to a unique name for each
-   cluster (e.g. `cluster-west`, `cluster-east`). This identifies the cluster
-   in the leader election lock.
+   cluster (e.g. `cluster-west`, `cluster-east`). This identifies the cluster in
+   the leader-election lock.
 
 5. **Set SMTP credentials** (optional) in `secrets.enc` via
-   `ansible-vault edit secrets.enc` for KPD email notifications.
+   `ansible-vault edit secrets.enc` for kpd email notifications.
 
 #### Cross-cluster leader election
 
-kpd supports deployment across multiple disjoint Kubernetes clusters with
-automatic active/passive failover. Only one instance is active at a time;
-the others remain in standby.
+kpd can be deployed across multiple disjoint Kubernetes clusters with automatic
+active/passive failover. Only one instance is active at a time; the others stay
+on standby.
 
-The leader election uses a file (`lock.json`) in the `kpd-lock` GitHub
+The leader election uses a file (`lock.json`) in the `kpd_lock_repo` GitHub
 repository as a distributed lock:
 
-- The active instance writes its cluster name and a timestamp to
-  `lock.json` using the GitHub Contents API. GitHub's SHA-based
-  compare-and-swap prevents concurrent writers.
+- The active instance writes its cluster name and a timestamp to `lock.json`
+  through the GitHub Contents API. GitHub's SHA-based compare-and-swap prevents
+  concurrent writers.
 - A heartbeat updates the timestamp every `kpd_heartbeat_interval_seconds`
-  (default 30 s).
+  (default 300 s).
 - Standby instances poll the lock. If the timestamp is older than
-  `kpd_lock_ttl_seconds` (default 120 s), a standby attempts a takeover.
-- On graceful shutdown the active instance deletes the lock file so
-  failover is immediate.
+  `kpd_lock_ttl_seconds` (default 1200 s), a standby attempts a takeover.
+- On graceful shutdown the active instance deletes the lock file, so failover is
+  immediate.
 
 #### Manual override
 
-Set `kpd_active: false` in `variables.yaml` (or uncomment the existing
-line) to force a cluster into permanent standby regardless of the lock
-state. This is useful during maintenance. Re-run the playbook after
-changing the value.
+Set `kpd_active: false` in `variables.yaml` (or uncomment the existing line) to
+force a cluster into permanent standby regardless of the lock state. This is
+useful during maintenance. Re-run the playbook after changing the value.
 
-The set of PCIe devices that may be passed to KubeVirt VMs is declared once, in
-`pciHostDevices` in
-`playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`. That single
-list is the source of truth: the `configure-physical-k8s-cluster-node` play
-reads it and binds every listed device to the `vfio-pci` driver on each node at
-boot by deriving a `vfio-pci.ids=...` kernel argument from it (plus the IOMMU
-args for the node's CPU vendor) — no hand-editing of the bootloader required.
-Any vfio ids already present on a node's running kernel command line are merged
-in rather than overwritten, so manual/legacy entries and non-KubeVirt
-passthrough devices survive. New devices only take effect after the node is
-**rebooted**, so plan a reboot whenever you change `pciHostDevices`.
+## GitHub runner scale sets
 
----
+The second main feature of this project is spawning GitHub Actions runner scale
+sets, following the [architecture](#architecture) above, for different GitHub
+projects.
 
-#### 📝TODO
-
-- Make the `pciHostDevices` KubeVirt configuration pluggable in the
-  variables.yaml instead of hard coding in
-  `playbook/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`
-
----
-
-### Installing Kubernetes on the nodes
-Next we are [deploying a k3s cluster](https://docs.k3s.io/quick-start) on our
-nodes.
-
-On the first node run:
-```
-#https://docs.k3s.io/datastore/ha-embedded
-ufw disable
-curl -sfL https://get.k3s.io | sh -s - server --nonroot-devices --cluster-init
-cat /var/lib/rancher/k3s/server/node-token
-```
-
-On all other nodes run:
-```
-ufw disable
-# K3S_TOKEN can be found on the first node at /var/lib/rancher/k3s/server/node-token
-curl -sfL https://get.k3s.io | K3S_TOKEN=<secret from first node> sh -s - server --nonroot-devices --server https://<ip or hostname of first node>:6443
-```
-
-Because we deploy longhorn on the bare metal cluster later, we need to use the
-`--nonroot-devices` flag when installing k3s. This sets the
-`device_ownership_from_security_context` in containerd
-(see https://github.com/k3s-io/k3s/issues/11168).
-
----
-
-#### 📝TODO
-
-- Create Ansible script for deploying k3s on the cluster nodes
-
----
-
-### Establishing a connection from k3s to your workstation
-Copy `/etc/rancher/k3s/k3s.yaml` from one of the cluster nodes to
-`~/.kube/config` on your workstation and change `127.0.0.1` to the
-cluster node IP.
-
-Verify the connection with `kubectl get nodes`.
-
-### Installing Kubernetes requirements for the CI infra
-Now we can install all Kubernetes requirements for the CI infrastructure
-that are provided by this project. To do so, run the following command on your
-workstation in the root of this repository:
-
-```
-ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass --ask-become-pass
-```
-
-Among other components this also deploys the in-cluster CI binary cache (see
-[CI binary cache](#ci-binary-cache) below), which serves version-matched
-`kubectl`/`virtctl`/`logcli` to the runner jobs.
-
-### Allowing insecure access to the self-hosted container registry
-
-We are self-hosting a container registry on the k8s cluster for kernel builds
-and other artifacts. The cluster was already configured by the previous step to
-accept this registry.
-We now have to configure the workstation to also be able to push and pull from
-this registry.
-On your workstation edit `/etc/docker/daemon.json` to contain:
-
-```
-{
-  "insecure-registries": ["<k8s-node-ip>:32000"]
-}
-```
-
-Now test the connection with
-```
-docker pull nginx:latest
-docker tag nginx:latest <k8s-node-ip>:32000/nginx:latest
-docker push <k8s-node-ip>:32000/nginx:latest
-```
-
----
-
-#### 📝TODO
-
-- Create Ansible script for adding this self-hosted repository to the
-  workstation in a non-destructive way
-
----
-
-## Creating new GitHub runner scale sets
-
-The second main contribution of this project is to be able to spawn GitHub
-runner scale sets according to the [proposed architecture](##Architecture)
-for different GitHub projects.
-
-ARC needs to authenticate against the GitHub API. Two methods are supported
-(see [GitHub docs](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/authenticate-to-the-api)).
-The playbook prompts for all credential fields; the authentication method is
-**inferred automatically** from which fields you fill in:
+ARC (Actions Runner Controller) authenticates against the GitHub API. Two methods
+are supported (see the
+[GitHub docs](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/authenticate-to-the-api)).
+The playbook prompts for all credential fields and infers the method from which
+fields you fill in:
 
 | Provide | Result |
 |---------|--------|
-| GitHub App ID + Installation ID + private key path | **GitHub App** auth (recommended) |
-| GitHub PAT | **Personal Access Token** auth |
+| GitHub App ID + Installation ID + private key path | GitHub App auth (recommended) |
+| GitHub PAT | Personal access token auth |
 | Nothing (leave all auth fields empty) | Reuses the existing `github-config-secret` in the namespace (useful for redeploying) |
 
-### Option A — GitHub App authentication (recommended)
+### Option A: GitHub App authentication (recommended)
 
-1. **Create a GitHub App** owned by your organisation:
-   Navigate to your organisation's GitHub settings -> Developer settings ->
-   GitHub Apps -> New GitHub App.
+1. **Create a GitHub App** owned by your organisation. In your organisation's
+   GitHub settings, go to Developer settings -> GitHub Apps -> New GitHub App.
    - Set the Homepage URL to
-     `https://github.com/actions/actions-runner-controller`
-   - Deactivate Webhooks
-   - Under **Repository permissions** select:
-     - Administration: Read and write (required when `githubConfigUrl`
-       points to a repository, which is the typical setup)
+     `https://github.com/actions/actions-runner-controller`.
+   - Deactivate Webhooks.
+   - Under Repository permissions select:
+     - Administration: Read and write (required when `githubConfigUrl` points to
+       a repository, which is the typical setup)
      - Metadata: Read-only
-   - Under **Organization permissions** select:
+   - Under Organization permissions select:
      - Self-hosted runners: Read and write
-   - Click "Create GitHub App"
-   - Note the **App ID** (you will be prompted for it when running the
-     playbook)
-   - Scroll down, generate a **private key** and save the `.pem` file
-     (you will be prompted for its path)
+   - Click "Create GitHub App".
+   - Note the App ID (you are prompted for it when running the playbook).
+   - Scroll down, generate a private key and save the `.pem` file (you are
+     prompted for its path).
 
-2. **Install the App** on your organisation:
-   In the left menu hit "Install App" and click "Install" for the
-   organisation. Under "Repository access" select the repositories that
-   the runner scale sets should serve (the repos used as `githubConfigUrl`).
-   Note the **installation ID** (last number in the URL).
+2. **Install the App** on your organisation. In the left menu hit "Install App"
+   and click "Install" for the organisation. Under "Repository access" select the
+   repositories that the runner scale sets should serve (the repos used as
+   `githubConfigUrl`). Note the installation ID (last number in the URL).
 
-When running the playbook you will be prompted for the **App ID**,
-**Installation ID** and the **path to the `.pem` private key file**.
+When running the playbook you are prompted for the App ID, Installation ID and
+the path to the `.pem` private key file.
 
-### Option B — Personal Access Token (PAT)
+### Option B: Personal access token (PAT)
 
 Generate a new fine-grained personal access token for the repository or
-organization. Follow the steps from
-[here](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
-and make the following least privilege choices (the token must be generated
-within the personal settings while selecting the correct `Resource owner`):
+organization. Follow the
+[GitHub guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
+and make the following least-privilege choices (the token must be generated in
+your personal settings while selecting the correct `Resource owner`):
 
 ```
 For point 7   (Expiration) please select "No expiration" or the longest period
               possible.
-For point 9   (Owner resource) plese select the corresponding owning entity of
-              the Repository that should subscirbe to the runner sets
+For point 9   (Owner resource) please select the corresponding owning entity of
+              the repository that should subscribe to the runner sets.
 For point 11  (Repository access) please select "Only select repositories" and
-              add ONLY the one repository that reqires the self-hosted testing
+              add ONLY the one repository that requires the self-hosted testing
               infrastructure.
 For point 13  (Permissions) please select the following options for Repository
               permissions (the rest should be granted "No access"):
@@ -372,52 +379,46 @@ For point 13  (Permissions) please select the following options for Repository
   Secrets:        Read-only
   Variables:      Read and write
   Webhooks:       Read and write
-  Worflow:        Read and write
+  Workflow:       Read and write
 ```
 
-Please always share the token only on a secure channel!
+Always share the token over a secure channel only.
 
 ### Repository configuration
 
-Configuration required by the GitHub repo that uses the self-hosted runner
-scale set:
-- Optionally: Prevent group of people to allow actions:
-Repo -> Settings -> Actions -> General -> Actions permissions
-- Prevent PR's to execute code on self-hosted runner before getting approved:
-Repo -> Settings -> Actions -> General -> 'Require approval for all outside
-collaborators' -> Save
-- Restrict write access to the repository with the GITHUB_TOKEN:
-Repo -> Settings -> Actions -> General -> 'Read repository content and packages
-permissions' -> Save
-- Preventing GitHub Actions from creating or approving pull requests through the
-GITHUB_TOKEN:
-Repo -> Settings -> Actions -> General -> DISABLE 'Allow GitHub Actions to
-create and approve pull requests' -> Save
-- In reviews watch out for code injection and secret leaks within workflows
-(https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
-In the repository->settings->actions->general->workflow
+Configuration required on the GitHub repository that uses the self-hosted runner
+scale set (Repo -> Settings -> Actions -> General):
+
+- Optionally restrict who may run Actions, under Actions permissions.
+- Prevent PRs from running code on the self-hosted runner before approval: enable
+  "Require approval for all outside collaborators".
+- Restrict write access for the `GITHUB_TOKEN`: set "Read repository content and
+  packages permissions".
+- Prevent Actions from creating or approving pull requests: disable "Allow GitHub
+  Actions to create and approve pull requests".
+- In reviews, watch for code injection and secret leaks in workflows (see
+  [security hardening for GitHub Actions](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)).
 
 ### Running the playbook
 
-Run the following command in the root of this repository and answer the
-prompts to create the runner scale sets:
+Run the following in the root of the repository and answer the prompts:
 ```
 ansible-playbook -i k8s-inventory.yaml playbooks/setup-github-runner-scale-set.yaml
 ```
 
-The playbook will prompt for the runner set name, repo URL and authentication
-credentials. Fill in either the GitHub App fields **or** the PAT field.
-Leave all auth fields empty to reuse the existing `github-config-secret`
-(e.g. when redeploying a runner scale set with updated configuration).
+The playbook prompts for the runner set name, repo URL and authentication
+credentials. Fill in either the GitHub App fields or the PAT field. Leave all
+auth fields empty to reuse the existing `github-config-secret` (e.g. when
+redeploying a runner scale set with updated configuration).
 
-The runner scale sets `arc-vm-<repo-name>` should now be visible in the
-Repo->Settings->Actions->Runners overview.
+The runner scale set `arc-vm-<repo-name>` should now appear under
+Repo -> Settings -> Actions -> Runners.
 
-### Debug help
-ARC listeners can be inspected via `kubectl get pods -n arc-systems`.
-ARC related pods can be inspected via `kubectl get pods -n gh-runner-<repo-name>`.
-VMs can be inspected via `kubectl get vmi --all-namespaces`.
-VM templates can be inspected via `kubectl get vmi --all-namespaces`.
+### Debugging
+
+- ARC listeners: `kubectl get pods -n arc-systems`
+- ARC pods for a repo: `kubectl get pods -n gh-runner-<repo-name>`
+- VMs: `kubectl get vmi --all-namespaces`
 
 ### Deleting a runner scale set
 
@@ -429,77 +430,70 @@ kubectl api-resources --verbs=list --namespaced -o name  | xargs -n 1 kubectl ge
 kubectl delete ns gh-runner-<repo-name>
 ```
 
----
+## GitLab runners
 
-#### 📝TODO
-
-- Create Ansible script for deleting a runner scale set
-
----
-
-## Creating GitLab runners (alternative to GitHub)
-
-In addition to the GitHub ARC path above, the same KubeVirt-on-demand
+As an alternative to the GitHub ARC path above, the same on-demand KubeVirt
 architecture can be driven from a (self-managed) GitLab instance. This is
 implemented in parallel and does not affect the GitHub path: instead of the
-Actions Runner Controller, it deploys the official **GitLab Runner** with the
-**Kubernetes executor**, which provisions one ephemeral job pod per CI/CD job.
-Each job pod runs as the same `kubevirt-actions-runner` service account and can
+Actions Runner Controller, it deploys the official GitLab Runner with the
+Kubernetes executor, which provisions one ephemeral job pod per CI/CD job. Each
+job pod runs as the same `kubevirt-actions-runner` service account and can
 therefore spawn KubeVirt VMs.
 
 The relevant variables live under the `#gitlab-runner` section of
 `variables.yaml` (chart version, concurrency and the runner image name).
 
-### Create a runner and obtain its authentication token
+### Create a runner and obtain its token
 
 GitLab 16+ uses runner authentication tokens (the legacy registration-token
-workflow was removed in GitLab 18.0). Runner **tags are configured in the UI**
-when the runner is created, not in the deployment
-(https://docs.gitlab.com/ci/runners/runners_scope/#create-an-instance-runner-with-a-runner-authentication-token):
+workflow was removed in GitLab 18.0). Runner tags are configured in the UI when
+the runner is created, not in the deployment (see the
+[GitLab docs](https://docs.gitlab.com/ci/runners/runners_scope/#create-an-instance-runner-with-a-runner-authentication-token)):
 
-1. In GitLab navigate to your project (or group/instance) ->
-   **Settings -> Build (or CI/CD) -> Runners -> New runner**.
-2. Set the **tags**. Use the tags the playbook prints for your cluster — these
-   are `kubevirt` plus one tag per PCI device that is both permitted by the
-   KubeVirt CR and allocatable on a node (e.g. `nvme-wdc-zn540`).
-3. Leave **Run untagged jobs** disabled so only `tags:`-matched jobs land on
-   this runner.
+1. In GitLab, go to your project (or group/instance) ->
+   Settings -> Build (or CI/CD) -> Runners -> New runner.
+2. Set the tags. Use the tags the playbook prints for your cluster; these are
+   `kubevirt` plus one tag per PCI device that is both permitted by the KubeVirt
+   CR and allocatable on a node (e.g. `nvme-wdc-zn540`).
+3. Leave "Run untagged jobs" disabled so only `tags:`-matched jobs land on this
+   runner.
 4. Optionally lock the runner to the project and protect it.
-5. Click **Create runner** and copy the **runner authentication token**
-   (prefixed `glrt-`). You are prompted for it when running the playbook.
+5. Click "Create runner" and copy the runner authentication token (prefixed
+   `glrt-`). You are prompted for it when running the playbook.
 
 ### Repository configuration
 
-As with the GitHub path, harden the project so untrusted contributors cannot
-execute code on the self-hosted runner before review:
-- **Settings -> CI/CD -> Runners**: only expose this runner to the intended
+As with the GitHub path, harden the project so untrusted contributors cannot run
+code on the self-hosted runner before review:
+
+- Settings -> CI/CD -> Runners: only expose this runner to the intended
   project(s).
-- **Settings -> CI/CD -> General pipelines**: require approval / restrict
-  pipelines for merge requests from forks.
+- Settings -> CI/CD -> General pipelines: require approval or restrict pipelines
+  for merge requests from forks.
 - Review `.gitlab-ci.yml` changes for code injection and secret leaks, the same
   way you would review GitHub workflows.
 
 ### Running the playbook
 
-Run the following in the root of this repository and answer the prompts:
+Run the following in the root of the repository and answer the prompts:
 ```
 ansible-playbook -i k8s-inventory.yaml playbooks/setup-gitlab-runner-scale-set.yaml
 ```
 
 The playbook prompts for the runner set name (the namespace becomes
-`gl-runner-<name>`), the GitLab instance URL and the runner authentication
-token. Leave the token empty to reuse the existing `gitlab-runner-secret`
-(e.g. when redeploying with updated configuration). It also builds and pushes
-the `kubevirt-runner` job image to the local registry.
+`gl-runner-<name>`), the GitLab instance URL and the runner authentication token.
+Leave the token empty to reuse the existing `gitlab-runner-secret` (e.g. when
+redeploying with updated configuration). It also builds and pushes the
+`kubevirt-runner` job image to the local registry.
 
 The runner should now appear under your project's
-**Settings -> CI/CD -> Runners** as online.
+Settings -> CI/CD -> Runners as online.
 
-### Using the runner from a pipeline
+### Using the runner in a pipeline
 
 Include the reusable KubeVirt CI template (the GitLab counterpart of the
-`kubevirt-action` composite action) from the consuming project's
-`.gitlab-ci.yml` and extend the hidden `.kubevirt` job:
+`kubevirt-action` composite action) from the consuming project's `.gitlab-ci.yml`
+and extend the hidden `.kubevirt` job:
 
 ```yaml
 include:
@@ -518,10 +512,11 @@ blktests:
 
 Test results, dmesg logs and kernel artifacts are exposed as job `artifacts:`.
 
-### Debug help
+### Debugging
+
 The runner manager and job pods live in the `gl-runner-<name>` namespace:
-`kubectl get pods -n gl-runner-<name>`.
-VMs can be inspected via `kubectl get vmi --all-namespaces`.
+- Pods: `kubectl get pods -n gl-runner-<name>`
+- VMs: `kubectl get vmi --all-namespaces`
 
 ### Deleting a GitLab runner
 
@@ -534,20 +529,20 @@ kubectl delete ns gl-runner-<name>
 ```
 Also delete the runner in the GitLab UI (Settings -> CI/CD -> Runners).
 
----
+## Operations and reference
 
-## Further notes and tips
 ### CI binary cache
-The kubevirt runner jobs need `kubectl`, `virtctl` and `logcli`. Instead of
+
+The KubeVirt runner jobs need `kubectl`, `virtctl` and `logcli`. Instead of
 downloading these from the internet on every job, they are cached in the cluster
 and served over HTTP from the `ci-tools` namespace (deployed by the
 `k8s-install-ci-binary-cache` role as part of `install-k8s-requirements.yaml`).
 
-The cache is backed by a Longhorn volume and kept correct by a `CronJob` that
+The cache is backed by a Longhorn volume and kept correct by a CronJob that
 queries the live cluster and re-downloads a binary only when its version drifts:
 `kubectl` is matched to the Kubernetes server version, `virtctl` to the observed
-KubeVirt version, and `logcli` to the pinned `logcli_version` in
-`variables.yaml`. The kubevirt entrypoint fetches the binaries from
+KubeVirt version, and `logcli` to the pinned `logcli_version` in `variables.yaml`.
+The KubeVirt entrypoint fetches the binaries from
 `http://ci-bin-cache.ci-tools.svc.cluster.local` (covered by the runner pods'
 `NO_PROXY`, so mitmproxy is bypassed) and only falls back to a direct internet
 download if the cache is unreachable.
@@ -561,35 +556,27 @@ kubectl create job -n ci-tools --from=cronjob/ci-bin-cache-updater ci-bin-cache-
 kubectl logs -n ci-tools job/ci-bin-cache-manual
 ```
 
-### Accessing logs through Grafana Loki
-On your workstation query the admin password, which you should change on the
-first login, and forward the port for Grafana:
+### Access logs via Grafana Loki
+
+On your workstation, fetch the admin password (change it on first login) and
+forward the Grafana port:
 ```
 kubectl get secret --namespace logging grafana -o jsonpath="{.data.admin-password}" | base64 --decode | xargs
 kubectl port-forward service/grafana 3000:80 -n logging
 ```
-Then you can access the Grafana dashboard via:
-http://localhost:3000/
+Then open the dashboard at http://localhost:3000/.
 
-Logs can be queried though the Explorer with the Loki data source or in
-'Drilldown'.
+Query logs through the Explore view with the Loki data source, or in Drilldown.
 
-### Using private docker registry
-On your workstation:
-```
-docker pull nginx:latest
-docker tag nginx:latest <k8s-node-ip>:32000/nginx:latest
-docker push <k8s-node-ip>:32000/nginx:latest
-```
-In the k8s deployments the container image can be specified by (This is a
-mirror name on the k3s config):
-`container-registry.local:5000/nginx:latest`
+### Use the private container registry
 
-In docker-in-docker (dind) deployments refer to the registry like so:
-`registry-service.docker-registry.svc.cluster.local`
+After configuring the workstation (see
+[Allow the workstation to use the private registry](#allow-the-workstation-to-use-the-private-registry)),
+reference images in Kubernetes deployments through the k3s registry mirror:
+`container-registry.local:5000/nginx:latest`.
 
-E.g.:
-daemon.json:
+In docker-in-docker (dind) deployments, refer to the registry like so:
+`registry-service.docker-registry.svc.cluster.local`. For example, `daemon.json`:
 ```
 {
   "insecure-registries" : ["registry-service.docker-registry.svc.cluster.local"]
@@ -628,11 +615,11 @@ spec:
 EOF
 ```
 
-### Downloading a VM's image:
-You might need to issue this command multiple times until the vmexport timeout
-is not canceling this command. The image should be in the raw format to be
-consumed by qemu. It can be in compressed format to reuse the image with
-kubevirt (see virtctl manual).
+### Download a VM image
+
+You might need to issue this command several times until the vmexport timeout
+stops canceling it. The image should be in raw format to be consumed by qemu, or
+in a compressed format to reuse it with KubeVirt (see the virtctl manual).
 
 ```
 #via shutoff vm
@@ -641,67 +628,70 @@ virtctl vmexport download vmexportname --vm <vm-name> --format raw --output=/pat
 virtctl vmexport download vmexportname --snapshot <vm-snapshot-name> --format raw --output=/path/to/vm-export.raw --port-forward
 ```
 
-### Adding new PCIe devices to consume in KubeVirt VMs
-Adjust and commit the
-`playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml` file of
-this repository to add another `pciHostDevices` entry. Use `lspci -n` to get
-the vendor and device ID of the PCIe device that should be consumed by
-KubeVirt VMs.
+### Add PCIe passthrough devices
 
-You do not rebind the driver by hand. The
-`configure-physical-k8s-cluster-node` play derives the `vfio-pci.ids=` kernel
-argument from the `pciHostDevices` list, so once the new ID is in the manifest,
-re-run the host configuration to bind it to `vfio-pci` on boot:
+To add another device, edit and commit
+`playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml` with a new
+`pciHostDevices` entry. Use `lspci -n` to get the vendor and device ID of the
+PCIe device that KubeVirt VMs should consume. See
+[Declare PCIe passthrough devices](#declare-pcie-passthrough-devices) for how the
+list is used.
+
+You do not rebind the driver by hand. The `configure-physical-k8s-cluster-node`
+play derives the `vfio-pci.ids=` kernel argument from the `pciHostDevices` list,
+so once the new ID is in the manifest, re-run the host configuration to bind it to
+`vfio-pci` on boot:
 ```
 ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml --ask-vault-pass --ask-become-pass
 ```
-The new ID is merged into each node's kernel command line (existing ids are
-preserved); **reboot the node** for the kernel to actually bind the device to
-`vfio-pci`. The play prints a reminder whenever a reboot is pending. The merge
-is additive, so removing a device from `pciHostDevices` does not unbind it on
-the host — delete the id from the node's kernel command line by hand (the
-`/etc/default/grub.d/99-vfio-passthrough.cfg` drop-in on Debian, or
-`grubby --remove-args` on RedHat) and reboot if you need the host to reclaim it.
+The new ID is merged into each node's kernel command line (existing IDs are
+preserved); reboot the node for the kernel to actually bind the device to
+`vfio-pci`. The play prints a reminder whenever a reboot is pending. The merge is
+additive, so removing a device from `pciHostDevices` does not unbind it on the
+host. To reclaim it, delete the ID from the node's kernel command line by hand
+(the `/etc/default/grub.d/99-vfio-passthrough.cfg` drop-in on Debian, or
+`grubby --remove-args` on RedHat) and reboot.
 
-That same playbook run also re-applies the manifest to the running cluster so
-KubeVirt permits the device. To update only the cluster side without touching
-the host binding, apply it directly from one of the control nodes:
+The same playbook run also re-applies the manifest to the running cluster so
+KubeVirt permits the device. To update only the cluster side without touching the
+host binding, apply it directly from one of the control nodes:
 ```
 kubectl apply -f kubevirt-config.yaml
 ```
 
 The new PCIe device can then be consumed in new KubeVirt deployments.
 
-#### Passing through SMR HDDs behind SAS HBAs
-Unlike the NVMe drives (e.g. the WDC ZN540), which are themselves PCIe
-endpoints that get rebound to `vfio-pci` individually, an SMR / host-managed
-(ZBC) HDD is a SAS/SATA disk sitting *behind* a SAS HBA. The PCIe endpoint is
-the **HBA**, not the disk, so passthrough happens at **HBA granularity**: the
-whole controller — and every disk attached to it — is handed to the VM.
+#### SMR HDDs behind SAS HBAs
 
-To pass through "an individual SMR disk", **connect each SMR disk to its own
-HBA** so that per-HBA passthrough is equivalent to per-disk passthrough. When
-binding the HBAs to `vfio-pci`, make sure that:
+Unlike the NVMe drives (e.g. the WDC ZN540), which are themselves PCIe endpoints
+rebound to `vfio-pci` individually, an SMR / host-managed (ZBC) HDD is a SAS/SATA
+disk sitting behind a SAS HBA. The PCIe endpoint is the HBA, not the disk, so
+passthrough happens at HBA granularity: the whole controller, and every disk
+attached to it, is handed to the VM.
+
+To pass through an individual SMR disk, connect each SMR disk to its own HBA so
+that per-HBA passthrough is equivalent to per-disk passthrough. When binding the
+HBAs to `vfio-pci`, make sure that:
 - each HBA you pass through sits in its own IOMMU group
   (`ls /sys/kernel/iommu_groups/`), and
-- the OS / Longhorn storage disks are **not** attached to any HBA you bind
-  (binding takes the disks away from the host).
+- the OS / Longhorn storage disks are not attached to any HBA you bind (binding
+  takes the disks away from the host).
 
 The Broadcom/LSI SAS 9400-series Tri-Mode HBAs are already declared in
 `kubevirt-config.yaml`, pooled under one resource name
 (`devices.kubevirt.io/hba-broadcom-sas34xx`) because several models share a PCI
-device ID and KubeVirt cannot tell them apart anyway. Confirm the IDs present
-on your hosts with:
+device ID and KubeVirt cannot tell them apart anyway. Confirm the IDs present on
+your hosts with:
 ```
 lspci -nn -d 1000:
 ```
 Add any missing IDs to `pciHostDevices`; the host configuration play then binds
-them to `vfio-pci` automatically by deriving `vfio-pci.ids=1000:00ac,...` from
-the manifest (see "Adding new PCIe devices" above). A node reboot applies it.
+them to `vfio-pci` automatically by deriving `vfio-pci.ids=1000:00ac,...` from the
+manifest (see above). A node reboot applies it.
 
-Request the HBA like any other host device — the runner tag and
-`host_devices` / `KUBEVIRT_HOST_DEVICES` plumbing is device-agnostic. Because
-the resource is a pool, requesting it N times yields N (arbitrary) HBAs:
+Request the HBA like any other host device; the runner tag and `host_devices` /
+`KUBEVIRT_HOST_DEVICES` plumbing is device-agnostic. Because the resource is a
+pool, requesting it N times yields N (arbitrary) HBAs:
 ```yaml
 blktests-smr:
   extends: .kubevirt
@@ -711,70 +701,75 @@ blktests-smr:
     KUBEVIRT_RUN_CMDS: |
       cd blktests && ./check zbd
 ```
-Inside the VM the (generalized) `prepare-nvme-devices.sh` discovers any
+Inside the VM, the (generalized) `prepare-nvme-devices.sh` discovers any
 host-managed/host-aware disk from `/sys/block/*/queue/zoned` and exports it as
 `ZBD<N>` in `/etc/environment`, exactly like an NVMe ZNS namespace. The guest
 kernel must provide `CONFIG_SCSI_MPT3SAS` and `CONFIG_BLK_DEV_ZONED`.
 
-### How to access the Rook Ceph web UI
-On the workstation run in a separate shell:
+### Access the Rook Ceph dashboard
+
+On the workstation, in a separate shell:
 ```
 kubectl port-forward "service/rook-ceph-mgr-dashboard" 8443 -n rook-ceph
 ```
+Then open https://localhost:8443/.
 
-Then the web UI is accessible through:
-https://localhost:8443/
+For login credentials, see the
+[Rook docs](https://rook.io/docs/rook/v1.13/Storage-Configuration/Monitoring/ceph-dashboard/#login-credentials).
 
-For the login credentials refer to
-https://rook.io/docs/rook/v1.13/Storage-Configuration/Monitoring/ceph-dashboard/#login-credentials
-
-For the Prometheus dashboard one can query the IP with
+For the Prometheus dashboard, query the IP with:
 ```
 echo "http://$(kubectl -n rook-ceph -o jsonpath={.status.hostIP} get pod prometheus-rook-prometheus-0):30900"
 ```
 
-### How to access the Longhorn web UI
-On the workstation run in a separate shell:
+### Access the Longhorn dashboard
+
+On the workstation, in a separate shell:
 ```
 kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80
 ```
-Then the web UI is accessible through:
-http://localhost:8080
+Then open http://localhost:8080.
 
-### KubeVirt - Uploading a new cloud image
-Open port in a separate terminal on your workstation where the image
-to upload is located
+### Upload a new KubeVirt cloud image
+
+In a separate terminal on the workstation where the image to upload is located,
+open the upload proxy port:
 ```
 kubectl port-forward -n cdi service/cdi-uploadproxy 18443:443
 ```
-In a second terminal upload the image
+In a second terminal, upload the image:
 ```
 virtctl image-upload dv <image-name> --size=5Gi --image-path <image-path> --uploadproxy-url=https://127.0.0.1:18443 --storage-class longhorn --insecure --force-bind --volume-mode block --namespace <namespace>
 ```
 
-If the image upload fails because of a too small size option, the PVCs and
-related cdi-upload pod can be deleted with the following command:
+If the upload fails because the size option is too small, delete the PVCs and the
+related cdi-upload pod:
 ```
 kubectl delete datavolume <image-name>
 ```
 
-### Querying the KubeVirt version:
+### Query the KubeVirt version
 ```
 kubectl get kubevirt.kubevirt.io/kubevirt -n kubevirt -o=jsonpath="{.status.observedKubeVirtVersion}"
 ```
 
-### Updating KubeVirt
-READ THE DOCUMENTATION BEFORE TO BE SURE NOTHING CHANGED!
+### Update KubeVirt
+
+Read the documentation first to be sure nothing changed.
 ```
 export RELEASE=v1.4.0
 kubectl apply -f https://github.com/kubevirt/kubevirt/releases/download/${RELEASE}/kubevirt-operator.yaml
 ```
 
-### Execute virsh commands in virt-launcher pod
-https://kubevirt.io/user-guide/debug_virt_stack/virsh-commands/
+### Run virsh in a virt-launcher pod
 
-### Run an Ansible playbook within a KubeVirt VirtualMachineInstance
-https://kubevirt.io/user-guide/virtual_machines/accessing_virtual_machines/
+See the
+[KubeVirt virsh guide](https://kubevirt.io/user-guide/debug_virt_stack/virsh-commands/).
+
+### Run an Ansible playbook inside a KubeVirt VM
+
+See the
+[KubeVirt access guide](https://kubevirt.io/user-guide/virtual_machines/accessing_virtual_machines/).
 
 Add `$HOME/.ssh/virtctl-proxy-config`:
 ```
@@ -783,24 +778,36 @@ Host vmi/*
 Host vm/*
    ProxyCommand virtctl port-forward --stdio=true %h %p
 ```
-And the virtual-inventory.yaml:
+And `virtual-inventory.yaml`:
 ```
 virtual_k8s_cluster_nodes:
   hosts:
     masternode:
       ansible_host: vmi/k8s-masternode
 ```
-Then run on the machine where `virtctl ssh` commands to the virtual instances
-can be made:
+Then run, on a machine that can reach the VMs via `virtctl ssh`:
 ```
-ansible-playbook -i virtual-inventory.yaml playbooks/ansible-hello-world.yaml --ask-vault-pass --ask-become-pass --ssh-common-args "-F $HOME/.ssh/virtctl-proxy-config"
+ansible-playbook -i virtual-inventory.yaml playbooks/<your-playbook>.yaml --ask-vault-pass --ask-become-pass --ssh-common-args "-F $HOME/.ssh/virtctl-proxy-config"
 ```
 
-Hint: Install qemu-guest-agent packages with Ansible playbooks if the inventory
-contains VMs
+Hint: install the qemu-guest-agent package via your playbook if the inventory
+contains VMs.
 
-With this virtctl-proxy-config one is able to use the system ssh to connect to
-KubeVirt VMs instead of using virtctl:
+With this `virtctl-proxy-config` you can also use the system ssh to connect to
+KubeVirt VMs instead of virtctl:
 ```
 ssh user@vmi/vmname.namespace -i $HOME/.ssh/identity -F $HOME/.ssh/virtctl-proxy-config
 ```
+
+## Roadmap
+
+Known limitations and planned improvements:
+
+- Make the VM resources configurable (e.g. through instance types). The
+  kernel-builder scale set is currently limited to 4 CPUs and 8 Gi of memory.
+- Make `pciHostDevices` configurable in `variables.yaml` instead of hard-coding
+  it in `playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`.
+- Add an Ansible playbook for deploying k3s on the cluster nodes.
+- Add an Ansible playbook for registering the self-hosted registry on the
+  workstation in a non-destructive way.
+- Add an Ansible playbook for deleting a runner scale set.

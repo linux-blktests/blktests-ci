@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+#
+# KubeVirt onDefineDomain hook (run via the sidecar-shim image).
+#
+# Disable the option ROM (rombar=0 / <rom bar='off'/>) on every passed-through
+# PCI host device. The default SeaBIOS firmware executes each PCI device's
+# legacy option ROM during POST; LSI/Broadcom SAS HBAs ship an option ROM that
+# hangs SeaBIOS, so the guest never reaches the kernel (empty serial console;
+# ssh fails with "no route to host"). We boot via SeaBIOS (not EFI) because
+# EFI/OVMF ignores KubeVirt's injected kernel (kernelBoot), so disabling the
+# option ROM is what lets a host-device VM boot. The ROM is only needed to
+# BIOS-boot *from* the device, which we never do.
+#
+# The sidecar-shim invokes this with "--vmi <json> --domain <xml>" and expects
+# the modified domain XML on stdout.
+
+import sys
+import xml.etree.ElementTree as ET
+
+# Preserve the qemu namespace prefix on any qemu:* elements in the round-trip.
+ET.register_namespace("qemu", "http://libvirt.org/schemas/domain/qemu/1.0")
+
+
+def get_arg(flag):
+    for i in range(len(sys.argv) - 1):
+        if sys.argv[i] == flag:
+            return sys.argv[i + 1]
+    return None
+
+
+def main():
+    domxml = get_arg("--domain")
+    if not domxml:
+        # Nothing to do if we did not receive a domain; emit what we got.
+        sys.stdout.write(domxml or "")
+        return
+    root = ET.fromstring(domxml)
+    for hostdev in root.iter("hostdev"):
+        if hostdev.get("type") == "pci" and hostdev.find("rom") is None:
+            ET.SubElement(hostdev, "rom", {"bar": "off"})
+    sys.stdout.write(ET.tostring(root, encoding="unicode"))
+
+
+if __name__ == "__main__":
+    main()

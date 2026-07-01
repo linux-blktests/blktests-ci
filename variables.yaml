@@ -18,6 +18,9 @@ rook_ceph_repo: "https://github.com/rook/rook.git"
 #prometheus
 prometheus_helm_chart_url: "https://prometheus-community.github.io/helm-charts"
 
+# logcli (Grafana Loki CLI)
+logcli_version: "v3.6.2"
+
 #KubeVirt
 kubevirt_version: "v1.7.0"
 kubevirt_cri_version: "v1.64.0"
@@ -37,6 +40,16 @@ gitlab_runner_concurrent: 3
 # local registry by the gitlab-runner role. It is referenced through the k3s
 # registry mirror so kubelet can pull it on the cluster nodes.
 kubevirt_runner_image: "container-registry.local:5000/kubevirt-runner:latest"
+
+#ci-binary-cache
+# In-cluster HTTP cache that serves version-matched kubectl/virtctl/logcli to
+# the GitHub ARC and GitLab kubevirt runners, so CI jobs fetch them from the
+# LAN instead of the internet. A CronJob reconciles the binaries against the
+# live cluster on the schedule below.
+ci_tools_namespace: "ci-tools"
+ci_bin_cache_storage_class: "longhorn"
+ci_bin_cache_size: "2Gi"
+ci_bin_cache_schedule: "0 * * * *"
 
 #mitmproxy
 # Optional: Set corporate_ca_cert_path to the path of your corporate SSL MITM

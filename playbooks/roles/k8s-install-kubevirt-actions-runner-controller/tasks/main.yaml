@@ -18,6 +18,13 @@
     kind: Namespace
     state: present
 
+- name: "Ensure the arc-systems namespace exists"
+  kubernetes.core.k8s:
+    name: arc-systems
+    api_version: v1
+    kind: Namespace
+    state: present
+
 - name: "Infer authentication method from prompted values"
   set_fact:
     use_github_app: "{{ (arc_github_app_id | default('') | length > 0) or (arc_github_app_installation_id | default('') | string | length > 0 and arc_github_app_installation_id | default('') | string != '') or (arc_github_app_private_key_path | default('') | length > 0) }}"
@@ -223,20 +230,60 @@
             fi
           done
 
-          ZBDCOUNTER=0
-          BDEVCOUNTER=0
-          for ns in /dev/nvme[0-9]*; do
-            if [[ "$ns" =~ /dev/nvme[0-9]+n[0-9]+$ ]]; then
-              ctrl=$(echo $ns | sed 's/n[0-9]*$//')
-              if sudo nvme effects-log $ctrl -c 0x02 --output-format=json | jq -r '.[] | {io_cmd_set}' | grep -iq zone ; then
-                echo "ZBD${ZBDCOUNTER}=${ns}" >> /etc/environment
-                ZBDCOUNTER=$((ZBDCOUNTER+1))
-              else
-                echo "BDEV${BDEVCOUNTER}=${ns}" >> /etc/environment
-                BDEVCOUNTER=$((BDEVCOUNTER+1))
-              fi
-            fi
+          udevadm settle
+          for ctrl in /dev/nvme[0-9]*; do
+            [[ "$ctrl" =~ /dev/nvme[0-9]+$ ]] || continue
+            for _ in $(seq 1 50); do
+              [ -b "${ctrl}n1" ] && break
+              sleep 0.1
+            done
           done
+
+          # Surface zoned block devices to the test runner as ZBD<N> and
+          # conventional NVMe namespaces as BDEV<N> via /etc/environment.
+          #
+          # Zoned devices are discovered generically from sysfs so that both
+          # NVMe ZNS namespaces and SCSI/SATA host-managed (SMR/ZBC) disks
+          # behind passed-through HBAs are picked up uniformly. The root disk
+          # and other conventional block devices report "none" and are skipped.
+          ZBDCOUNTER=0
+          for sysdev in /sys/block/*; do
+            dev=$(basename "$sysdev")
+            zoned=$(cat "$sysdev/queue/zoned" 2>/dev/null || echo none)
+            case "$zoned" in
+              host-managed|host-aware)
+                echo "ZBD${ZBDCOUNTER}=/dev/${dev}" >> /etc/environment
+                ZBDCOUNTER=$((ZBDCOUNTER+1))
+                ;;
+            esac
+          done
+
+          BDEVCOUNTER=0
+          for ns in /dev/nvme[0-9]*n[0-9]*; do
+            [[ "$ns" =~ /dev/nvme[0-9]+n[0-9]+$ ]] || continue
+            dev=$(basename "$ns")
+            zoned=$(cat "/sys/block/${dev}/queue/zoned" 2>/dev/null || echo none)
+            [ "$zoned" = "none" ] || continue
+            echo "BDEV${BDEVCOUNTER}=${ns}" >> /etc/environment
+            BDEVCOUNTER=$((BDEVCOUNTER+1))
+          done
+
+# onDefineDomain sidecar hook that disables the legacy option ROM (rombar=0) on
+# passed-through PCI host devices. Referenced from the VM template's
+# hooks.kubevirt.io/hookSidecars annotation (only rendered for host-device VMs).
+# Without it the LSI SAS HBA option ROM hangs SeaBIOS during POST and the guest
+# never boots. Requires the KubeVirt "Sidecar" feature gate.
+- name: "Install kubevirt-pci-rombar-hook configMap (disable PCI option ROM via sidecar)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: kubevirt-pci-rombar-hook
+        namespace: gh-runner-{{ runner_set_name }}
+      data:
+        onDefineDomain: "{{ lookup('file', playbook_dir + '/roles/k8s-install-kubevirt-actions-runner-controller/files/onDefineDomain') }}"
 
 - name: "Extract repo name from github_config_url (used for gha-runner-scale-set label)"
   set_fact:

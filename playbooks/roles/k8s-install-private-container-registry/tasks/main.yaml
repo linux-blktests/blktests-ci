@@ -131,7 +131,7 @@
     state: present
     template: ../templates/docker-registry-rbac.yaml
 
-- name: "Deploy cronjob to delete linux-kernel-containerdisks older than 60 days"
+- name: "Deploy cronjob to delete linux-kernel-containerdisks older than 30 days"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -158,28 +158,66 @@
                       set -e
                       REGISTRY_HOST="registry-service.docker-registry.svc.cluster.local:80"
                       REPOSITORY="linux-kernel-containerdisk"
-                      DAYS=60
+                      DAYS=30
                       NOW=$(date +%s)
+                      ACCEPT="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
 
                       echo "Fetching tags for $REPOSITORY..."
-                      for tag in $(curl -s -u $USER:$PASS http://$REGISTRY_HOST/v2/$REPOSITORY/tags/list | jq -r '.tags[]'); do
-                        # Get manifest and config digest
-                        manifest=$(curl -s -u $USER:$PASS -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                      for tag in $(curl -s -u $USER:$PASS http://$REGISTRY_HOST/v2/$REPOSITORY/tags/list | jq -r '.tags[] // empty'); do
+                        manifest=$(curl -s -u $USER:$PASS -H "Accept: $ACCEPT" \
                           http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$tag)
-                        cfg=$(echo "$manifest" | jq -r '.config.digest')
-                        created=$(curl -s -u $USER:$PASS http://$REGISTRY_HOST/v2/$REPOSITORY/blobs/$cfg | jq -r '.created')
+                        media_type=$(echo "$manifest" | jq -r '.mediaType // empty')
+                        case "$media_type" in
+                          *index*|*manifest.list*)
+                            child=$(echo "$manifest" | jq -r '[.manifests[] | select((.platform.architecture // "") != "unknown") | select(.annotations["vnd.docker.reference.type"] == null)][0].digest // empty')
+                            if [ -z "$child" ]; then
+                              echo "Skipping $tag (no image manifest in index)"
+                              continue
+                            fi
+                            image_manifest=$(curl -s -u $USER:$PASS -H "Accept: $ACCEPT" \
+                              http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$child)
+                            ;;
+                          *)
+                            image_manifest="$manifest"
+                            ;;
+                        esac
+                        cfg=$(echo "$image_manifest" | jq -r '.config.digest // empty')
+                        created=""
+                        if [ -n "$cfg" ]; then
+                          created=$(curl -s -u $USER:$PASS http://$REGISTRY_HOST/v2/$REPOSITORY/blobs/$cfg | jq -r '.created // empty')
+                        fi
                         if [ -z "$created" ]; then
                           echo "Skipping $tag (no created date)"
                           continue
                         fi
-                        ts=$(date -d "$created" +%s)
+                        ts=$(date -d "$created" +%s 2>/dev/null || echo "")
+                        if [ -z "$ts" ]; then
+                          echo "Skipping $tag (unparseable created date: $created)"
+                          continue
+                        fi
                         age=$(( (NOW - ts) / 86400 ))
                         if [ $age -gt $DAYS ]; then
                           digest=$(curl -sI -u $USER:$PASS \
-                            -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+                            -H "Accept: $ACCEPT" \
                             http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$tag \
-                            | awk -F': ' '/Docker-Content-Digest/{print $2}' | tr -d '\r')
+                            | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}' | tr -d '\r')
+                          if [ -z "$digest" ]; then
+                            echo "Skipping $tag (could not resolve digest)"
+                            continue
+                          fi
                           echo "Deleting $tag (age: $age days, digest: $digest)"
+                          # Delete every child manifest the index references before
+                          # the index itself. Deleting only the index leaves its
+                          # per-arch/attestation child manifests on disk, and those
+                          # keep their (large) layers referenced so garbage-collect
+                          # cannot reclaim any space. registry 2.8.3's
+                          # --delete-untagged would collect them but is unsafe for
+                          # tagged indexes (it also prunes children of kept images),
+                          # so we prune the children of this index explicitly.
+                          for child_digest in $(echo "$manifest" | jq -r '.manifests[]?.digest // empty'); do
+                            echo "  deleting child manifest $child_digest"
+                            curl -s -u $USER:$PASS -X DELETE http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$child_digest
+                          done
                           curl -s -u $USER:$PASS -X DELETE http://$REGISTRY_HOST/v2/$REPOSITORY/manifests/$digest
                         else
                           echo "Keeping $tag (age: $age days)"

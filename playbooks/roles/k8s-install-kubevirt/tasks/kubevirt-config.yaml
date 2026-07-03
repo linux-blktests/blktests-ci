@@ -36,3 +36,9 @@ spec:
           resourceName: devices.kubevirt.io/nvme-wdc-sn840
         - pciVendorSelector: 8086:4140
           resourceName: devices.kubevirt.io/nvme-intel-optane
+        - pciVendorSelector: 1000:00ac # SAS3416 - HBA 9400-16i
+          resourceName: devices.kubevirt.io/hba-broadcom-sas34xx
+        - pciVendorSelector: 1000:00af # SAS3408 - HBA 9400-8i
+          resourceName: devices.kubevirt.io/hba-broadcom-sas34xx
+        - pciVendorSelector: 1000:00aa # SAS3516 - HBA 9400-8i8e
+          resourceName: devices.kubevirt.io/hba-broadcom-sas34xx

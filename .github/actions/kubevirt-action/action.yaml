@@ -26,6 +26,18 @@ inputs:
     description: "Container disk image backing the VM's root volume. If omitted, defaults to the pinned Fedora cloud image from the VM template."
     required: false
     default: ""
+  distro:
+    description: "Base image distro family: fedora, ubuntu, debian or opensuse. Selects the package manager and CA-trust layout used to provision the VM. If omitted, it is inferred from container_disk_image."
+    required: false
+    default: ""
+  root_device:
+    description: "Root block device the custom kernel boots from, e.g. /dev/vda1. Only used when kernel_version is set. If omitted, a per-distro default is used."
+    required: false
+    default: ""
+  root_flags:
+    description: "Root mount flags for the custom kernel boot, e.g. subvol=root for btrfs. Only used when kernel_version is set. If omitted, a per-distro default is used."
+    required: false
+    default: ""
 
 outputs:
   stdout:
@@ -55,6 +67,9 @@ runs:
         INPUT_RUN_CMDS: "${{ inputs.run_cmds }}"
         INPUT_HOST_DEVICES: "${{ inputs.host_devices }}"
         INPUT_CONTAINER_DISK_IMAGE: "${{ inputs.container_disk_image }}"
+        INPUT_DISTRO: "${{ inputs.distro }}"
+        INPUT_ROOT_DEVICE: "${{ inputs.root_device }}"
+        INPUT_ROOT_FLAGS: "${{ inputs.root_flags }}"
     - name: Create timestamp env var for artifact uploads
       shell: bash
       run: |

@@ -39,7 +39,9 @@ if [ "${max_repo_len}" -gt 0 ] && [ -n "${repo_slug}" ]; then
 else
   export vm_name="vm-runner-${vm_suffix}"
 fi
-export vm_user="fedora"
+# Every VM provisions its own dedicated login user via cloud-init, so the SSH
+# user is fixed regardless of the base image's default cloud user.
+export vm_user="runner"
 export ssh_options=(--identity-file=$(realpath ./identity | xargs) --local-ssh-opts="-o StrictHostKeyChecking=no")
 
 # Container disk image backing the VM's root volume. Optional override exposed
@@ -48,3 +50,26 @@ export ssh_options=(--identity-file=$(realpath ./identity | xargs) --local-ssh-o
 # INPUT_CONTAINER_DISK_IMAGE. When left empty the VM template falls back to its
 # pinned default.
 export container_disk_image="${INPUT_CONTAINER_DISK_IMAGE:-}"
+
+# Distro family of the base image. It selects the package manager and CA-trust
+# layout used to provision the VM, and the root device/flags for custom-kernel
+# boots. It is inferred from the container disk image reference (matching the
+# quay.io/containerdisks naming) but can be overridden with the `distro` input
+# (INPUT_DISTRO) for mirrored or renamed images. Defaults to fedora if
+# undecided.
+detect_distro() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *fedora*) echo fedora ;;
+    *ubuntu*) echo ubuntu ;;
+    *debian*) echo debian ;;
+    *opensuse*|*suse*|*tumbleweed*|*leap*|*microos*) echo opensuse ;;
+    *) echo fedora ;;
+  esac
+}
+export distro="${INPUT_DISTRO:-$(detect_distro "${container_disk_image}")}"
+
+# Optional overrides for the root filesystem location the custom kernel boots
+# from (only used when kernel_version is set). Empty means "use the per-distro
+# default baked into the VM template".
+export root_device="${INPUT_ROOT_DEVICE:-}"
+export root_flags="${INPUT_ROOT_FLAGS:-}"

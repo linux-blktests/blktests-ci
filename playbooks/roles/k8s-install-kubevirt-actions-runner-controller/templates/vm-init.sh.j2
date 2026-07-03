@@ -14,8 +14,8 @@ set -ex
 # `|| true` / `if !` commands below.
 trap 'rc=$?; echo "init.sh failed (exit ${rc}) at line ${LINENO}: ${BASH_COMMAND}" > /vm-init-failed 2>/dev/null || true; exit "${rc}"' ERR
 
-# Retry a (typically network-dependent) command a few times. Transient dnf /
-# registry / proxy hiccups otherwise abort init before /vm-ready is created.
+# Retry a (typically network-dependent) command a few times. Transient package
+# manager / registry / proxy hiccups otherwise abort init before /vm-ready.
 retry() {
   local n=1 max=5 delay=10
   until "$@"; do
@@ -29,6 +29,34 @@ retry() {
   done
 }
 
+distro="{{ distro | default('fedora', true) }}"
+vm_user="{{ vm_user | default('runner', true) }}"
+
+case "$distro" in
+  ubuntu|debian)
+    pkg_install() { apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; }
+    ca_anchor_dir="/usr/local/share/ca-certificates"
+    ca_cert_ext="crt"
+    ca_update_cmd="update-ca-certificates"
+    sg3_utils_pkg="sg3-utils"
+    ;;
+  opensuse)
+    pkg_install() { zypper --non-interactive install "$@"; }
+    ca_anchor_dir="/etc/pki/trust/anchors"
+    ca_cert_ext="pem"
+    ca_update_cmd="update-ca-certificates"
+    sg3_utils_pkg="sg3_utils"
+    ;;
+  *)
+    # fedora and other dnf-based (rhel/centos/almalinux) images
+    pkg_install() { dnf install -y "$@"; }
+    ca_anchor_dir="/etc/pki/ca-trust/source/anchors"
+    ca_cert_ext="pem"
+    ca_update_cmd="update-ca-trust"
+    sg3_utils_pkg="sg3_utils"
+    ;;
+esac
+
 {% if mitmproxy_ca_cert is defined and mitmproxy_ca_cert %}
 cat > /etc/profile.d/proxy.sh << 'EOF'
 export HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
@@ -38,6 +66,8 @@ export http_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
 export https_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
 export no_proxy=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
 EOF
+# Export into the current shell too so the package manager below picks up the
+# proxy (cloud-init runcmd is not a login shell and does not read profile.d).
 source /etc/profile.d/proxy.sh
 
 cat >> /etc/environment << 'EOF'
@@ -49,9 +79,23 @@ https_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
 no_proxy=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
 EOF
 
-cat >> /etc/dnf/dnf.conf << 'EOF'
+# Package-manager proxy. dnf and apt need explicit config; zypper honours the
+# http(s)_proxy env vars exported above.
+case "$distro" in
+  ubuntu|debian)
+    cat > /etc/apt/apt.conf.d/95proxy << 'EOF'
+Acquire::http::Proxy "http://mitmproxy.mitmproxy.svc.cluster.local:8080";
+Acquire::https::Proxy "http://mitmproxy.mitmproxy.svc.cluster.local:8080";
+EOF
+    ;;
+  opensuse)
+    ;;
+  *)
+    cat >> /etc/dnf/dnf.conf << 'EOF'
 proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
 EOF
+    ;;
+esac
 
 mkdir -p /etc/systemd/system/docker.service.d
 cat > /etc/systemd/system/docker.service.d/proxy.conf << 'EOF'
@@ -61,10 +105,11 @@ Environment="HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080"
 Environment="NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
 EOF
 
-cat > /etc/pki/ca-trust/source/anchors/mitmproxy-ca-cert.pem << 'CERT'
+install -d -m 0755 "$ca_anchor_dir"
+cat > "${ca_anchor_dir}/mitmproxy-ca-cert.${ca_cert_ext}" << 'CERT'
 {{ mitmproxy_ca_cert }}
 CERT
-update-ca-trust
+$ca_update_cmd
 {% endif %}
 
 mkdir -p /mnt/prepare-nvme-devices
@@ -80,16 +125,40 @@ tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
 depmod "$(uname -r)"
 {% endif %}
 modprobe tun
-loginctl enable-linger fedora
+loginctl enable-linger "$vm_user"
 
-retry dnf -y install podman jq nvme-cli sg3_utils lsscsi
+retry pkg_install sudo podman jq nvme-cli "$sg3_utils_pkg" lsscsi
 
+# A passed-through SAS HBA needs the mpt3sas driver. It is usually built into or
+# already shipped with the distro kernel; on Fedora the driver lives in the
+# kernel-modules(-extra) package, so pull it as a best-effort fallback.
 if ! modprobe mpt3sas 2>/dev/null; then
-  retry dnf -y install "kernel-modules-$(uname -r)" "kernel-modules-extra-$(uname -r)" \
-    || retry dnf -y install kernel-modules kernel-modules-extra || true
+  case "$distro" in
+    fedora)
+      retry pkg_install "kernel-modules-$(uname -r)" "kernel-modules-extra-$(uname -r)" \
+        || retry pkg_install kernel-modules kernel-modules-extra || true
+      ;;
+  esac
   depmod "$(uname -r)" || true
   modprobe mpt3sas || true
 fi
+
+# Add the runner user to container-runtime groups, but only those that actually
+# exist on this image/distro (a `docker` group, for example, only appears once
+# docker is installed). Skipping missing groups keeps user setup distro-agnostic
+# and avoids the cloud-init failure that listing a non-existent group causes.
+for grp in podman docker; do
+  if getent group "$grp" >/dev/null 2>&1; then
+    usermod -aG "$grp" "$vm_user"
+  fi
+done
+
+# Guarantee passwordless sudo for the runner user, independent of the base
+# image's cloud-init handling and of whether sudo shipped in the base image.
+install -d -m 0755 /etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$vm_user" > "/etc/sudoers.d/90-${vm_user}"
+chmod 0440 "/etc/sudoers.d/90-${vm_user}"
+visudo -cf "/etc/sudoers.d/90-${vm_user}"
 
 cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh
 chmod +x /prepare-nvme-devices.sh

@@ -56,12 +56,23 @@
     # Container disk image backing the VM root volume. If left empty, the VM
     # uses the pinned default image from the VM template.
     KUBEVIRT_CONTAINER_DISK_IMAGE: ""
+    # Base image distro family: fedora, ubuntu, debian or opensuse. Selects the
+    # package manager and CA-trust layout used to provision the VM. If left
+    # empty, it is inferred from the container disk image.
+    KUBEVIRT_DISTRO: ""
+    # Root device/flags the custom kernel boots from (only used when
+    # KUBEVIRT_KERNEL_VERSION is set). If left empty, per-distro defaults apply.
+    KUBEVIRT_ROOT_DEVICE: ""
+    KUBEVIRT_ROOT_FLAGS: ""
     # ---- Wiring (do not normally override) ------------------------------
     # Map the friendly variables to the names the entrypoint expects.
     INPUT_KERNEL_VERSION: "$KUBEVIRT_KERNEL_VERSION"
     INPUT_RUN_CMDS: "$KUBEVIRT_RUN_CMDS"
     INPUT_HOST_DEVICES: "$KUBEVIRT_HOST_DEVICES"
     INPUT_CONTAINER_DISK_IMAGE: "$KUBEVIRT_CONTAINER_DISK_IMAGE"
+    INPUT_DISTRO: "$KUBEVIRT_DISTRO"
+    INPUT_ROOT_DEVICE: "$KUBEVIRT_ROOT_DEVICE"
+    INPUT_ROOT_FLAGS: "$KUBEVIRT_ROOT_FLAGS"
     # Talk to the docker:dind service over plain TCP (shared pod localhost).
     DOCKER_HOST: "tcp://localhost:2375"
     DOCKER_TLS_CERTDIR: ""
@@ -77,7 +88,7 @@
       if git clone --depth 1 --branch main https://github.com/linux-blktests/blktests-ci.git "$src"; then
         install -m 0755 "$src/.github/actions/kubevirt-action/entrypoint.sh" /opt/kubevirt-runner/entrypoint.sh
         install -m 0755 "$src/.github/actions/kubevirt-action/vars.sh"       /opt/kubevirt-runner/vars.sh
-        install -m 0644 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-*.j2 /opt/kubevirt-runner/templates/
+        install -m 0644 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm.yaml.j2 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init.sh.j2 /opt/kubevirt-runner/templates/
         echo "kubevirt CI logic synced from linux-blktests/blktests-ci@main"
       else
         echo "WARNING: failed to clone linux-blktests/blktests-ci@main; using image-baked logic."

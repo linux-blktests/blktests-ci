@@ -110,6 +110,24 @@ function resolve_host_devices() {
   echo "Resolved host devices: ${host_devices}"
 }
 
+# Print concise scheduling/boot diagnostics for the current VM to the step log.
+# Called when the VM never becomes ready so the reason (Unschedulable, image
+# pull error, boot hang, ...) is visible inline; the full guest serial console
+# is still collected separately by the always() extract_dmesg_logs step.
+function dump_vm_diagnostics() {
+  echo "===== diagnostics for ${vm_name} ====="
+  kubectl describe vm "${vm_name}" || true
+  kubectl describe vmi "${vm_name}" || true
+  local vmi_uid pod
+  vmi_uid=$(kubectl get vmi "${vm_name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  if [ -n "${vmi_uid}" ]; then
+    pod=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [ -n "${pod}" ]; then
+      kubectl describe pod "${pod}" || true
+    fi
+  fi
+}
+
 function run_ssh_cmds() {
   if [ ! -f ./identity ]; then
     ssh-keygen -b 2048 -t rsa -f ./identity -q -N ""
@@ -141,10 +159,42 @@ EOF
   # Render and create VM
   j2 ${TEMPLATES_DIR}/fedora-var-kernel-vm.yaml.j2 vm-data.yaml -o vm.yml
   kubectl create -f vm.yml
-  kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout=300s
+  # EFI/OVMF boot plus enumeration of a passed-through HBA option ROM makes
+  # host-device VMs noticeably slower to reach "Running"; the previous 300s was
+  # too tight and produced intermittent "timed out waiting for Running"
+  # failures. Give them more headroom (overridable via VM_RUNNING_TIMEOUT).
+  local running_timeout="${VM_RUNNING_TIMEOUT:-600}"
+  if ! kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout="${running_timeout}s"; then
+    echo "ERROR: ${vm_name} did not reach Running within ${running_timeout}s." >&2
+    dump_vm_diagnostics || true
+    return 1
+  fi
+  # Wait for the guest to finish provisioning. cloud-init/init.sh touches
+  # /vm-ready on success (or /vm-init-failed on error). This loop used to be
+  # unbounded, so a VM that never became reachable (firmware/boot hang) or whose
+  # init stalled would spin here until the 1200-minute job timeout -- i.e. hang
+  # for ~20h. Bound it with a deadline instead: on timeout (or an init failure)
+  # dump diagnostics and fail the step, so the always() cleanup/log-collection
+  # steps run and the job ends promptly. Tune with VM_READY_TIMEOUT (seconds).
+  local ready_timeout="${VM_READY_TIMEOUT:-1200}"
+  local ready_deadline=$(( SECONDS + ready_timeout ))
   while true; do
-    echo "Waiting for VM to be up and running"
-    virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="ls /vm-ready" && break
+    local rc=0
+    virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" \
+      --command='test -f /vm-ready && exit 0; test -f /vm-init-failed && exit 3; exit 2' || rc=$?
+    [ "${rc}" -eq 0 ] && break
+    if [ "${rc}" -eq 3 ]; then
+      echo "ERROR: guest provisioning failed; /vm-init-failed present in ${vm_name}:" >&2
+      virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command='cat /vm-init-failed' || true
+      dump_vm_diagnostics || true
+      return 1
+    fi
+    if [ "${SECONDS}" -ge "${ready_deadline}" ]; then
+      echo "ERROR: ${vm_name} not ready within ${ready_timeout}s (guest unreachable or init stuck)." >&2
+      dump_vm_diagnostics || true
+      return 1
+    fi
+    echo "Waiting for VM to be up and running (timeout in $(( ready_deadline - SECONDS ))s)"
     sleep 10
   done
 

@@ -142,8 +142,10 @@ function run_ssh_cmds() {
 
   resolve_host_devices
 
-  # Render cloud-init script and create a ConfigMap for the VM to consume via virtiofs
-  j2 ${TEMPLATES_DIR}/fedora-vm-init.sh.j2 -o init.sh
+  # Render cloud-init script and create a ConfigMap for the VM to consume via
+  # virtiofs (j2 with no data file renders from the exported environment, e.g.
+  # distro, vm_user, kernel_version, mitmproxy_ca_cert)
+  j2 ${TEMPLATES_DIR}/vm-init.sh.j2 -o init.sh
   kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | kubectl apply -f -
 
   # Write YAML data file for VM template rendering (host_devices is a JSON
@@ -154,10 +156,14 @@ kernel_version: "${kernel_version}"
 vm_ssh_authorized_keys: "${vm_ssh_authorized_keys}"
 host_devices: ${host_devices}
 container_disk_image: "${container_disk_image}"
+distro: "${distro}"
+vm_user: "${vm_user}"
+root_device: "${root_device}"
+root_flags: "${root_flags}"
 EOF
 
   # Render and create VM
-  j2 ${TEMPLATES_DIR}/fedora-var-kernel-vm.yaml.j2 vm-data.yaml -o vm.yml
+  j2 ${TEMPLATES_DIR}/vm.yaml.j2 vm-data.yaml -o vm.yml
   kubectl create -f vm.yml
   # EFI/OVMF boot plus enumeration of a passed-through HBA option ROM makes
   # host-device VMs noticeably slower to reach "Running"; the previous 300s was

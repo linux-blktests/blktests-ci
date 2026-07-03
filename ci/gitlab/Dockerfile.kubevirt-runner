@@ -37,8 +37,8 @@ COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 # kubevirt entrypoint, the vars it sources, and the VM templates it renders.
 COPY .github/actions/kubevirt-action/entrypoint.sh /opt/kubevirt-runner/entrypoint.sh
 COPY .github/actions/kubevirt-action/vars.sh /opt/kubevirt-runner/vars.sh
-COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-vm-init.sh.j2 /opt/kubevirt-runner/templates/fedora-vm-init.sh.j2
-COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/fedora-var-kernel-vm.yaml.j2 /opt/kubevirt-runner/templates/fedora-var-kernel-vm.yaml.j2
+COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init.sh.j2 /opt/kubevirt-runner/templates/vm-init.sh.j2
+COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm.yaml.j2 /opt/kubevirt-runner/templates/vm.yaml.j2
 
 RUN chmod +x /opt/kubevirt-runner/entrypoint.sh /opt/kubevirt-runner/vars.sh
 

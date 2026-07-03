@@ -192,6 +192,35 @@
             "insecure-registries" : ["registry-service.docker-registry.svc.cluster.local"]
           }
 
+- name: "Install disable-hostdev-rom onDefineDomain hook ConfigMap"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: disable-hostdev-rom
+        namespace: gh-runner-{{ runner_set_name }}
+      data:
+        onDefineDomain.sh: |
+          #!/bin/sh
+          # KubeVirt onDefineDomain hook, run via the sidecar-shim image. Turn
+          # the option ROM off on every passed-through PCI host device: the
+          # Broadcom/LSI SAS HBA ships a legacy option ROM that SeaBIOS executes
+          # during POST and hangs on, which is why host-device VMs would
+          # otherwise need EFI. EFI/OVMF is incompatible with the direct
+          # kernelBoot used for custom-kernel tests, so keep SeaBIOS and suppress
+          # the ROM instead. sidecar-shim passes "--vmi <json> --domain <xml>",
+          # so the libvirt domain XML is the 4th argument. KubeVirt hands the
+          # hook a Go xml.MarshalIndent()ed domain, so attributes are double
+          # quoted (type="pci"), not single quoted like virsh dumpxml -- match
+          # either quote style or the substitution silently never fires.
+          tmp=$(mktemp)
+          printf '%s' "$4" > "$tmp"
+          sed -i "s|\(<hostdev[^>]*type=[\"']pci[\"'][^>]*>\)|\1<rom bar='off'/>|g" "$tmp"
+          cat "$tmp"
+          rm -f "$tmp"
+
 #TODO: Introduce bash script parameter for .env file output
 - name: "Install prepare-nvme-devices configMap"
   kubernetes.core.k8s:
@@ -239,19 +268,33 @@
             done
           done
 
+          # Surface zoned block devices to the test runner as ZBD<N> and
+          # conventional NVMe namespaces as BDEV<N> via /etc/environment.
+          #
+          # Zoned devices are discovered generically from sysfs so that both
+          # NVMe ZNS namespaces and SCSI/SATA host-managed (SMR/ZBC) disks
+          # behind passed-through HBAs are picked up uniformly. The root disk
+          # and other conventional block devices report "none" and are skipped.
           ZBDCOUNTER=0
-          BDEVCOUNTER=0
-          for ns in /dev/nvme[0-9]*; do
-            if [[ "$ns" =~ /dev/nvme[0-9]+n[0-9]+$ ]]; then
-              ctrl=$(echo $ns | sed 's/n[0-9]*$//')
-              if sudo nvme effects-log $ctrl -c 0x02 --output-format=json | jq -r '.[] | {io_cmd_set}' | grep -iq zone ; then
-                echo "ZBD${ZBDCOUNTER}=${ns}" >> /etc/environment
+          for sysdev in /sys/block/*; do
+            dev=$(basename "$sysdev")
+            zoned=$(cat "$sysdev/queue/zoned" 2>/dev/null || echo none)
+            case "$zoned" in
+              host-managed|host-aware)
+                echo "ZBD${ZBDCOUNTER}=/dev/${dev}" >> /etc/environment
                 ZBDCOUNTER=$((ZBDCOUNTER+1))
-              else
-                echo "BDEV${BDEVCOUNTER}=${ns}" >> /etc/environment
-                BDEVCOUNTER=$((BDEVCOUNTER+1))
-              fi
-            fi
+                ;;
+            esac
+          done
+
+          BDEVCOUNTER=0
+          for ns in /dev/nvme[0-9]*n[0-9]*; do
+            [[ "$ns" =~ /dev/nvme[0-9]+n[0-9]+$ ]] || continue
+            dev=$(basename "$ns")
+            zoned=$(cat "/sys/block/${dev}/queue/zoned" 2>/dev/null || echo none)
+            [ "$zoned" = "none" ] || continue
+            echo "BDEV${BDEVCOUNTER}=${ns}" >> /etc/environment
+            BDEVCOUNTER=$((BDEVCOUNTER+1))
           done
 
 - name: "Extract repo name from github_config_url (used for gha-runner-scale-set label)"

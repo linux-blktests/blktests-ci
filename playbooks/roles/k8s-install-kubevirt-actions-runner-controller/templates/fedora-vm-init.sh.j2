@@ -7,6 +7,28 @@
 
 set -ex
 
+# Record why provisioning failed so the host side can fail fast. The action
+# polls the guest for /vm-ready (success) and otherwise /vm-init-failed; without
+# this marker a mid-script failure leaves neither file and the host waits until
+# its timeout. Fires only on an unhandled (set -e) error, not on the guarded
+# `|| true` / `if !` commands below.
+trap 'rc=$?; echo "init.sh failed (exit ${rc}) at line ${LINENO}: ${BASH_COMMAND}" > /vm-init-failed 2>/dev/null || true; exit "${rc}"' ERR
+
+# Retry a (typically network-dependent) command a few times. Transient dnf /
+# registry / proxy hiccups otherwise abort init before /vm-ready is created.
+retry() {
+  local n=1 max=5 delay=10
+  until "$@"; do
+    if [ "${n}" -ge "${max}" ]; then
+      echo "command still failing after ${max} attempts: $*" >&2
+      return 1
+    fi
+    echo "attempt ${n}/${max} failed, retrying in ${delay}s: $*" >&2
+    n=$(( n + 1 ))
+    sleep "${delay}"
+  done
+}
+
 {% if mitmproxy_ca_cert is defined and mitmproxy_ca_cert %}
 cat > /etc/profile.d/proxy.sh << 'EOF'
 export HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
@@ -51,11 +73,23 @@ mount -t virtiofs prepare-nvme-devices /mnt/prepare-nvme-devices
 mkdir -p /mnt/kernel-modules-disk
 mount /dev/sr0 /mnt/kernel-modules-disk
 tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
+# Refresh modules.dep so modprobe can resolve the just-extracted modules. The
+# tarball unpacks under the kernel's real release (e.g. 7.2.0-rc1), which is
+# what uname -r reports for the booted kernel; the "{{ kernel_version }}" build
+# tag (e.g. linus-master) is not a modules directory, so depmod must use uname.
+depmod "$(uname -r)"
 {% endif %}
 modprobe tun
 loginctl enable-linger fedora
 
-dnf -y install podman jq nvme-cli
+retry dnf -y install podman jq nvme-cli sg3_utils lsscsi
+
+if ! modprobe mpt3sas 2>/dev/null; then
+  retry dnf -y install "kernel-modules-$(uname -r)" "kernel-modules-extra-$(uname -r)" \
+    || retry dnf -y install kernel-modules kernel-modules-extra || true
+  depmod "$(uname -r)" || true
+  modprobe mpt3sas || true
+fi
 
 cp /mnt/prepare-nvme-devices/prepare-nvme-devices.sh /prepare-nvme-devices.sh
 chmod +x /prepare-nvme-devices.sh

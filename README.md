@@ -24,6 +24,7 @@ storage-related kernel contribution is proposed, on real hardware.
   - [Kernel Patches Daemon (kpd)](#kernel-patches-daemon-kpd)
 - [GitHub runner scale sets](#github-runner-scale-sets)
 - [GitLab runners](#gitlab-runners)
+- [Redeploying a new version](#redeploying-a-new-version)
 - [Operations and reference](#operations-and-reference)
   - [CI binary cache](#ci-binary-cache)
   - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
@@ -528,6 +529,70 @@ kubectl api-resources --verbs=list --namespaced -o name | xargs -n 1 kubectl get
 kubectl delete ns gl-runner-<name>
 ```
 Also delete the runner in the GitLab UI (Settings -> CI/CD -> Runners).
+
+## Redeploying a new version
+
+Once a cluster is up, `redeploy.py` rolls out a new version of this repository
+onto it. Run it from the repository root on the workstation, after pulling the
+latest changes and with `variables.yaml`, `secrets.enc` and `k8s-inventory.yaml`
+in place and `kubectl`/`helm` pointing at the target cluster. It performs two
+steps:
+
+1. Re-runs `playbooks/install-k8s-requirements.yaml` to refresh the
+   cluster-wide components.
+2. Redeploys every runner scale set that already exists on the cluster, with no
+   manual configuration: the runner name and the GitHub/GitLab config URL are
+   read back from the cluster (GitHub ARC and GitLab are both handled) and the
+   existing auth secret is reused.
+
+> [!WARNING]
+> This terminates active runs. Before redeploying, every discovered scale set is
+> `helm uninstall`ed (which removes the ARC listener / GitLab runner manager so
+> no new job is accepted) and the KubeVirt VMs those jobs spawned are deleted;
+> in-flight jobs fail. The scale sets are recreated only at the end, which lifts
+> the freeze.
+
+Before anything is torn down, the script prints and writes an overview of the
+currently deployed scale sets (name, URL and the exact by-hand redeploy command
+for each) to a git-ignored, timestamped `redeploy-scale-sets-<timestamp>.log`.
+Each run writes its own file (existing manifests are never overwritten), so a
+hard failure always leaves a recovery manifest behind.
+
+Before redeploying make sure that the ssh key accessing the k3s nodes is added
+to the session: 
+```
+eval `ssh-agent`
+ssh-add <KEY>
+```
+
+Preview without changing anything:
+```
+python3 redeploy.py --dry-run
+```
+
+Redeploy (asks for confirmation, then once for the vault and sudo passwords):
+```
+python3 redeploy.py
+```
+
+If a run fails partway (e.g. the SSH key was not loaded into the agent when
+`install-k8s-requirements.yaml` ran), fix the problem and resume from the
+manifest that run wrote, instead of re-discovering from the cluster (reload does
+not terminate anything):
+```
+python3 redeploy.py --from-log redeploy-scale-sets-<timestamp>.log
+```
+
+Useful flags:
+```
+--from-log FILE             # reload+redeploy the scale sets from a saved manifest
+--no-become-password        # nodes have passwordless sudo; do not prompt for it
+--vault-password-file FILE  # read the ansible-vault password from a file
+--skip-ssh-check            # skip the "is an ssh-agent key loaded?" preflight
+--skip-install-requirements # only (terminate and) redeploy the runner scale sets
+--kinds github              # limit to github or gitlab (default: both)
+-y, --yes                   # do not ask for confirmation
+```
 
 ## Operations and reference
 

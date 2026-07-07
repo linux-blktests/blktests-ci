@@ -1,2 +1,4 @@
 secrets.enc
 k8s-inventory.yaml
+__pycache__
+redeploy-scale-sets*.log

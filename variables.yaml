@@ -4,6 +4,12 @@
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
 
+# Kubeconfig used by playbooks and redeploy.py.
+kubeconfig: "~/.kube/config"
+
+# Per-cluster scratch directory derived from the kubeconfig file name.
+ansible_tmp_dir: "~/tmp-ansible-{{ kubeconfig | default('~/.kube/config', true) | basename }}"
+
 #Longhorn
 longhorn_helm_chart_url: "https://charts.longhorn.io"
 longhorn_version: "1.11.0"

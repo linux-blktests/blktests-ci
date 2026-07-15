@@ -31,22 +31,22 @@
 
 #https://longhorn.io/docs/1.8.0/deploy/accessing-the-ui/longhorn-ingress/
 
-- name: "Ensure ~/tmp-ansible exists for configuring Longhorn UI access"
+- name: "Ensure the scratch directory exists for configuring Longhorn UI access"
   file:
-    path: "~/tmp-ansible"
+    path: "{{ ansible_tmp_dir }}"
     state: directory
 
 - name: "Check if auth file exists"
   stat:
-    path: "~/tmp-ansible/auth"
+    path: "{{ ansible_tmp_dir }}/auth"
   register: auth_file
 
 - name: "Create auth file"
-  shell: "echo {{ longhorn_ui_auth_user }}:$(openssl passwd -apr1 {{ longhorn_ui_auth_password }}) | xargs > ~/tmp-ansible/auth"
+  shell: "echo {{ longhorn_ui_auth_user }}:$(openssl passwd -apr1 {{ longhorn_ui_auth_password }}) | xargs > {{ (ansible_tmp_dir ~ '/auth') | expanduser | quote }}"
   when: not auth_file.stat.exists
 
 - name: "Get content of auth file"
-  shell: "cat ~/tmp-ansible/auth | base64"
+  shell: "cat {{ (ansible_tmp_dir ~ '/auth') | expanduser | quote }} | base64"
   register: auth_contents
 
 - name: "Create Longhorn basic auth secret"
@@ -65,13 +65,13 @@
 - name: "Copy Longhorn ingress deployment file"
   copy:
     src: ./longhorn-ingress.yaml
-    dest: ~/tmp-ansible/longhorn-ingress.yaml
+    dest: "{{ ansible_tmp_dir }}/longhorn-ingress.yaml"
 
 - name: "Apply Longhorn ingress deployment"
   kubernetes.core.k8s:
     state: present
     namespace: longhorn-system
-    src: ~/tmp-ansible/longhorn-ingress.yaml
+    src: "{{ ansible_tmp_dir }}/longhorn-ingress.yaml"
 
 # Enable snapshot support
 # https://longhorn.io/docs/1.8.0/snapshots-and-backups/csi-snapshot-support/enable-csi-snapshot-support/
@@ -79,7 +79,7 @@
 - name: "Git checkout"
   ansible.builtin.git:
     repo: 'https://github.com/kubernetes-csi/external-snapshotter.git'
-    dest: ~/tmp-ansible/external-snapshotter
+    dest: "{{ ansible_tmp_dir }}/external-snapshotter"
     version: "{{ longhorn_external_snapshotter_version }}"
 
 - name: "Apply external snapshotter crd"
@@ -88,7 +88,7 @@
     src: "{{ item }}"
   loop: >-
     {{
-      lookup('fileglob', '~/tmp-ansible/external-snapshotter/client/config/crd/*snapshot*.y*ml', wantlist=True)
+      lookup('fileglob', ansible_tmp_dir ~ '/external-snapshotter/client/config/crd/*snapshot*.y*ml', wantlist=True)
       | map('expanduser') | list
     }}
 
@@ -99,7 +99,7 @@
     src: "{{ item }}"
   loop: >-
     {{
-      lookup('fileglob', '~/tmp-ansible/external-snapshotter/deploy/kubernetes/snapshot-controller/*snapshot-controller.y*ml', wantlist=True)
+      lookup('fileglob', ansible_tmp_dir ~ '/external-snapshotter/deploy/kubernetes/snapshot-controller/*snapshot-controller.y*ml', wantlist=True)
       | map('expanduser') | list
     }}
 

@@ -14,6 +14,9 @@
 - name: "Install required kubernetes componentes"
   hosts: localhost
   gather_facts: no
+  environment:
+    KUBECONFIG: "{{ kubeconfig | default('~/.kube/config', true) | expanduser }}"
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig | default('~/.kube/config', true) | expanduser }}"
   tasks:
     - include_vars: ../variables.yaml
     - include_vars: ../secrets.enc
@@ -23,9 +26,9 @@
         name: kubernetes
         state: present
 
-    - name: "Ensure ~/tmp-ansible exists for deployment files"
+    - name: "Ensure the scratch directory exists for deployment files"
       file:
-        path: "~/tmp-ansible"
+        path: "{{ ansible_tmp_dir }}"
         state: directory
 
     - name: "Wait until Kubernetes cluster is up and running again (in case of reboot)"
@@ -93,6 +96,9 @@
 - name: "Install kpd"
   hosts: localhost
   gather_facts: no
+  environment:
+    KUBECONFIG: "{{ kubeconfig | default('~/.kube/config', true) | expanduser }}"
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig | default('~/.kube/config', true) | expanduser }}"
   tasks:
     - include_vars: ../variables.yaml
     - include_vars: ../secrets.enc

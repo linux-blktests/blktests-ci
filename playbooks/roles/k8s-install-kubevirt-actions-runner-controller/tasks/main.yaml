@@ -323,15 +323,15 @@
   set_fact:
     pci_device_labels: "{{ cluster_nodes.resources | map(attribute='status.allocatable', default={}) | map('dict2items') | flatten | selectattr('key', 'in', permitted_pci_devices) | selectattr('value', '!=', '0') | map(attribute='key') | map('regex_replace', '^devices.kubevirt.io/', '') | unique | list }}"
 
-- name: "Ensure ~/tmp-ansible exists"
+- name: "Ensure the scratch directory exists"
   file:
-    path: "~/tmp-ansible"
+    path: "{{ ansible_tmp_dir }}"
     state: directory
 
 - name: Generate arc-vm-scale-set-values.yaml from template
   template:
     src: arc-vm-scale-set-values.yaml.j2
-    dest: ~/tmp-ansible/arc-vm-scale-set-values.yaml
+    dest: "{{ ansible_tmp_dir }}/arc-vm-scale-set-values.yaml"
   vars:
     github_config_secret: "github-config-secret"
 
@@ -347,4 +347,4 @@
     create_namespace: true
     chart_version: "{{ gha_rss_version }}"
     chart_ref: oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set
-    values_files: "{{ lookup('ansible.builtin.env', 'HOME') }}/tmp-ansible/arc-vm-scale-set-values.yaml"
+    values_files: "{{ ansible_tmp_dir | expanduser }}/arc-vm-scale-set-values.yaml"

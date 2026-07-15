@@ -8,6 +8,9 @@
 - name: "Deploy a GitLab Runner (Kubernetes executor) that spawns KubeVirt VMs on demand from a GitLab CI/CD pipeline"
   hosts: localhost
   gather_facts: no
+  environment:
+    KUBECONFIG: "{{ kubeconfig | default('~/.kube/config', true) | expanduser }}"
+    K8S_AUTH_KUBECONFIG: "{{ kubeconfig | default('~/.kube/config', true) | expanduser }}"
   vars_prompt:
     - name: runner_set_name
       prompt: Suffix of the GitLab runner deployment (namespace gl-runner-<suffix>)
@@ -20,6 +23,8 @@
       default: ""
       private: false
   tasks:
+    - include_vars: ../variables.yaml
+
     - name: "Install the kernel builder cron job for building nightly kernels"
       include_role:
         name: kernel-builder-k8s-job

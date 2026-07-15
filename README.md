@@ -25,6 +25,7 @@ storage-related kernel contribution is proposed, on real hardware.
 - [GitHub runner scale sets](#github-runner-scale-sets)
 - [GitLab runners](#gitlab-runners)
 - [Redeploying a new version](#redeploying-a-new-version)
+- [Running staging and prod side by side](#running-staging-and-prod-side-by-side)
 - [Operations and reference](#operations-and-reference)
   - [CI binary cache](#ci-binary-cache)
   - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
@@ -103,6 +104,12 @@ ansible-vault create secrets.enc
 Do not commit `secrets.enc`. Edit it later with `ansible-vault edit secrets.enc`;
 re-running the playbooks alone is not enough to change a secret value.
 
+The `kubeconfig` entry at the top of `variables.yaml` selects which cluster the
+playbooks and `redeploy.py` act on. It defaults to `~/.kube/config`; leave it as
+is for a single cluster. See
+[Connect kubectl to your workstation](#connect-kubectl-to-your-workstation) and
+[Running staging and prod side by side](#running-staging-and-prod-side-by-side).
+
 Copy the inventory template and fill in your node IPs:
 
 ```
@@ -160,6 +167,16 @@ Verify the connection:
 ```
 kubectl get nodes
 ```
+
+Every playbook and `redeploy.py` reads the `kubeconfig` variable from
+`variables.yaml` to decide which cluster to act on, and exports it as
+`KUBECONFIG` (for `kubectl`/`helm`/`virtctl`) and `K8S_AUTH_KUBECONFIG` (for the
+`kubernetes.core` Ansible modules) while they run. It defaults to the standard
+`~/.kube/config`, so a single-cluster setup needs no change. To drive more than
+one cluster from the same workstation, keep a separate kubeconfig per cluster
+(for example `~/.kube/config-prod` and `~/.kube/config-staging`) and set
+`kubeconfig` accordingly; see
+[Running staging and prod side by side](#running-staging-and-prod-side-by-side).
 
 ### Install the Kubernetes CI requirements
 
@@ -535,7 +552,9 @@ Also delete the runner in the GitLab UI (Settings -> CI/CD -> Runners).
 Once a cluster is up, `redeploy.py` rolls out a new version of this repository
 onto it. Run it from the repository root on the workstation, after pulling the
 latest changes and with `variables.yaml`, `secrets.enc` and `k8s-inventory.yaml`
-in place and `kubectl`/`helm` pointing at the target cluster. It performs two
+in place. It acts on the cluster named by the `kubeconfig` variable in
+`variables.yaml` (override with `--kubeconfig`), using it for its own
+`kubectl`/`helm` calls and forwarding it to the playbooks. It performs two
 steps:
 
 1. Re-runs `playbooks/install-k8s-requirements.yaml` to refresh the
@@ -585,6 +604,7 @@ python3 redeploy.py --from-log redeploy-scale-sets-<timestamp>.log
 
 Useful flags:
 ```
+--kubeconfig PATH           # target cluster's kubeconfig (default: from variables.yaml)
 --from-log FILE             # reload+redeploy the scale sets from a saved manifest
 --no-become-password        # nodes have passwordless sudo; do not prompt for it
 --vault-password-file FILE  # read the ansible-vault password from a file
@@ -592,6 +612,72 @@ Useful flags:
 --skip-install-requirements # only (terminate and) redeploy the runner scale sets
 --kinds github              # limit to github or gitlab (default: both)
 -y, --yes                   # do not ask for confirmation
+```
+
+## Running staging and prod side by side
+
+Because the target cluster is selected entirely by the `kubeconfig` variable,
+one workstation can drive several clusters at once by checking the repository
+out into one [git worktree](https://git-scm.com/docs/git-worktree) per cluster,
+each on its own branch with its own `kubeconfig`.
+
+Keep one kubeconfig file per cluster on the workstation, for example
+`~/.kube/config-prod` and `~/.kube/config-staging` (copy each from the
+respective cluster's `/etc/rancher/k3s/k3s.yaml`, as in
+[Connect kubectl to your workstation](#connect-kubectl-to-your-workstation)).
+
+Create a worktree and branch per cluster:
+```
+# from an existing checkout
+git worktree add ../blktests-ci-prod    -b prod
+git worktree add ../blktests-ci-staging -b staging
+```
+
+In each worktree, set `kubeconfig` in `variables.yaml` to that cluster's file
+and commit it on the worktree's branch (the `kubeconfig` line is the only
+intended difference between the branches):
+```
+# in ../blktests-ci-prod (branch: prod)
+kubeconfig: "~/.kube/config-prod"
+
+# in ../blktests-ci-staging (branch: staging)
+kubeconfig: "~/.kube/config-staging"
+```
+
+`secrets.enc` and `k8s-inventory.yaml` are git-ignored and therefore not shared
+between worktrees, so give each worktree its own copy of both, pointed at that
+cluster's nodes and secrets.
+
+The workstation-side scratch directory (`ansible_tmp_dir`, where the playbooks
+stage rendered manifests, downloaded release YAMLs and git checkouts) is derived
+from `kubeconfig`, so each cluster gets its own (e.g. `~/tmp-ansible-config-prod`
+vs `~/tmp-ansible-config-staging`). This keeps a staging run from reapplying a
+prod run's staged files, or leaking one cluster's Longhorn UI credentials to the
+other. Override `ansible_tmp_dir` in `variables.yaml` to pin an explicit path.
+
+From then on, every command run inside a worktree acts only on that worktree's
+cluster; the two never cross. Run the playbooks or `redeploy.py` from the
+matching directory:
+```
+cd ../blktests-ci-staging && python3 redeploy.py   # acts on staging
+cd ../blktests-ci-prod    && python3 redeploy.py   # acts on prod
+```
+
+To point a single command at another cluster without switching worktrees,
+override the kubeconfig explicitly (this wins over `variables.yaml`):
+```
+ansible-playbook -i k8s-inventory.yaml playbooks/install-k8s-requirements.yaml \
+  -e kubeconfig=~/.kube/config-staging --ask-vault-pass --ask-become-pass
+python3 redeploy.py --kubeconfig ~/.kube/config-staging
+```
+
+For ad-hoc `kubectl`/`helm`/`virtctl` against a specific cluster, point the tool
+at the file directly. `--kubeconfig` wins over the `KUBECONFIG` environment
+variable, which wins over the default `~/.kube/config`:
+```
+kubectl --kubeconfig ~/.kube/config-staging get nodes  # per command, via flag
+KUBECONFIG=~/.kube/config-staging kubectl get nodes     # per command, via env var
+export KUBECONFIG=~/.kube/config-staging                # for the whole shell session
 ```
 
 ## Operations and reference

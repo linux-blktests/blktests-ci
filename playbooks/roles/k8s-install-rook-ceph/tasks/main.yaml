@@ -6,15 +6,15 @@
 
 - include_vars: ../../../../variables.yaml
 
-- name: "Ensure ~/tmp-ansible exists for rook-ceph deployment files"
+- name: "Ensure the scratch directory exists for rook-ceph deployment files"
   file:
-    path: "~/tmp-ansible"
+    path: "{{ ansible_tmp_dir }}"
     state: directory
 
 - name: "Clone rook repository"
   ansible.builtin.git:
     repo: "{{ rook_ceph_repo }}"
-    dest: "~/tmp-ansible/rook"
+    dest: "{{ ansible_tmp_dir }}/rook"
     version: "{{ rook_ceph_version }}"
     single_branch: true
 
@@ -24,14 +24,14 @@
   shell: |
     kubectl create -f crds.yaml -f common.yaml -f operator.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples"
 
 - name: "Wait for rook-ceph pods to become ready"
   shell: "kubectl wait --namespace=rook-ceph --for=condition=Ready pod --all --timeout=2000s"
 
 - name: "Adjust device names that are allowed to be deployed in the cluster -> All nvme devices that are not unbound by default are allowed to be used"
   ansible.builtin.lineinfile:
-    path: ~/tmp-ansible/rook/deploy/examples/cluster.yaml
+    path: "{{ ansible_tmp_dir }}/rook/deploy/examples/cluster.yaml"
     regexp: '^(\s*)#deviceFilter:'
     line: '    deviceFilter: ^nvme.*'
     state: present
@@ -40,13 +40,13 @@
   shell: |
     kubectl create -f cluster.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples"
 
 - name: "Deploy ceph rbd (block) storage class"
   shell: |
     kubectl create -f storageclass.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples/csi/rbd
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples/csi/rbd"
 
 - name: "Set rook-ceph-block as default storage-class"
   shell: |
@@ -56,13 +56,13 @@
   shell: |
     kubectl create -f snapshotclass.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples/csi/rbd
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples/csi/rbd"
 
 - name: "Deploy ceph-fs"
   shell: |
     kubectl create -f filesystem.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples"
 
 - name: "Wait for rook-ceph-mds pods to become ready"
   shell: "kubectl wait --namespace=rook-ceph --for=condition=Ready pod -l app=rook-ceph-mds --timeout=2000s"
@@ -71,7 +71,7 @@
   shell: |
     kubectl create -f storageclass.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples/csi/cephfs
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples/csi/cephfs"
 
 - name: "Add Prometheus Community helm repo"
   kubernetes.core.helm_repository:
@@ -93,7 +93,7 @@
   shell: |
     kubectl create -f service-monitor.yaml -f exporter-service-monitor.yaml -f prometheus.yaml -f prometheus-service.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples/monitoring
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples/monitoring"
 
 - name: "Wait for rook-ceph prometheus pods to become ready"
   shell: "kubectl wait --namespace=rook-ceph --for=condition=Ready pod prometheus-rook-prometheus-0 --timeout=2000s"
@@ -102,7 +102,7 @@
   shell: |
     kubectl create -f rbac.yaml -f localrules.yaml
   args:
-    chdir: ~/tmp-ansible/rook/deploy/examples/monitoring
+    chdir: "{{ ansible_tmp_dir }}/rook/deploy/examples/monitoring"
 
 - name: "Patch CephCluster to enable monitoring"
   shell: |

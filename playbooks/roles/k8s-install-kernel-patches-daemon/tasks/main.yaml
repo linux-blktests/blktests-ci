@@ -120,9 +120,9 @@
         name: kpd-config
         namespace: kernel-patches-daemon
       stringData:
-        kpd.json: "{{ kpd_config_json | to_json }}"
+        kpd.json: "{{ kpd_config_json }}"
         github-app-private-key.pem: "{{ kpd_github_app_private_key }}"
-        labels.json: "{{ kpd_labels_json | to_json }}"
+        labels.json: "{{ kpd_labels_json }}"
         template_base: "{{ kpd_template_base }}"
         template_success: "{{ kpd_template_success }}"
         template_failure: "{{ kpd_template_failure }}"

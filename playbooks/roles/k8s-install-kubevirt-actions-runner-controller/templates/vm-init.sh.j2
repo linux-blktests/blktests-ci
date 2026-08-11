@@ -132,7 +132,19 @@ retry pkg_install sudo podman jq nvme-cli "$sg3_utils_pkg" lsscsi
 # A passed-through SAS HBA needs the mpt3sas driver. It is usually built into or
 # already shipped with the distro kernel; on Fedora the driver lives in the
 # kernel-modules(-extra) package, so pull it as a best-effort fallback.
-if ! modprobe mpt3sas 2>/dev/null; then
+sas_hba_attached() {
+  local vendor_file
+  for vendor_file in /sys/bus/pci/devices/*/vendor; do
+    # 0x1000 is LSI Logic / Broadcom, the vendor of the permitted SAS34xx HBAs.
+    [ -r "$vendor_file" ] || continue
+    if [ "$(cat "$vendor_file")" = "0x1000" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if sas_hba_attached && ! modprobe mpt3sas 2>/dev/null; then
   case "$distro" in
     fedora)
       retry pkg_install "kernel-modules-$(uname -r)" "kernel-modules-extra-$(uname -r)" \

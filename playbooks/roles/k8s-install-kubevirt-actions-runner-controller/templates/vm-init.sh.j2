@@ -120,7 +120,8 @@ mount -t virtiofs prepare-nvme-devices /mnt/prepare-nvme-devices
 {% if kernel_version is defined and kernel_version %}
 mkdir -p /mnt/kernel-modules-disk
 mount /dev/sr0 /mnt/kernel-modules-disk
-tar -xvf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
+# Avoid flooding the serial console with module names.
+tar -xf /mnt/kernel-modules-disk/kernel_m.tgz --directory /usr/lib/modules/
 # Refresh modules.dep so modprobe can resolve the just-extracted modules. The
 # tarball unpacks under the kernel's real release (e.g. 7.2.0-rc1), which is
 # what uname -r reports for the booted kernel; the "{{ kernel_version }}" build

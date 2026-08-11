@@ -30,6 +30,7 @@ storage-related kernel contribution is proposed, on real hardware.
   - [CI binary cache](#ci-binary-cache)
   - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
   - [Use the private container registry](#use-the-private-container-registry)
+  - [The test VM container disk](#the-test-vm-container-disk)
   - [Download a VM image](#download-a-vm-image)
   - [Add PCIe passthrough devices](#add-pcie-passthrough-devices)
   - [Access the Rook Ceph dashboard](#access-the-rook-ceph-dashboard)
@@ -765,6 +766,11 @@ spec:
       name: daemon-config
 EOF
 ```
+
+### The test VM container disk
+
+Manage the `kubevirt-runner` and `blktests` package bundles in
+[linux-nvme/ci-containers](https://github.com/linux-nvme/ci-containers).
 
 ### Download a VM image
 

@@ -35,6 +35,7 @@ vm_user="{{ vm_user | default('runner', true) }}"
 case "$distro" in
   ubuntu|debian)
     pkg_install() { apt-get update; DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"; }
+    pkg_present() { dpkg -s "$1" >/dev/null 2>&1; }
     ca_anchor_dir="/usr/local/share/ca-certificates"
     ca_cert_ext="crt"
     ca_update_cmd="update-ca-certificates"
@@ -42,6 +43,7 @@ case "$distro" in
     ;;
   opensuse)
     pkg_install() { zypper --non-interactive install "$@"; }
+    pkg_present() { rpm -q "$1" >/dev/null 2>&1; }
     ca_anchor_dir="/etc/pki/trust/anchors"
     ca_cert_ext="pem"
     ca_update_cmd="update-ca-certificates"
@@ -50,6 +52,7 @@ case "$distro" in
   *)
     # fedora and other dnf-based (rhel/centos/almalinux) images
     pkg_install() { dnf install -y "$@"; }
+    pkg_present() { rpm -q "$1" >/dev/null 2>&1; }
     ca_anchor_dir="/etc/pki/ca-trust/source/anchors"
     ca_cert_ext="pem"
     ca_update_cmd="update-ca-trust"
@@ -127,7 +130,17 @@ depmod "$(uname -r)"
 modprobe tun
 loginctl enable-linger "$vm_user"
 
-retry pkg_install sudo podman jq nvme-cli "$sg3_utils_pkg" lsscsi
+# Install only tooling missing from the base image.
+# Test the joined expansion because shell array-length syntax conflicts with Jinja.
+missing_pkgs=()
+for pkg in sudo podman jq nvme-cli "$sg3_utils_pkg" lsscsi; do
+  pkg_present "$pkg" || missing_pkgs+=("$pkg")
+done
+if [ -n "${missing_pkgs[*]}" ]; then
+  retry pkg_install "${missing_pkgs[@]}"
+else
+  echo "runner tooling already present in the image; skipping package install"
+fi
 
 # A passed-through SAS HBA needs the mpt3sas driver. It is usually built into or
 # already shipped with the distro kernel; on Fedora the driver lives in the

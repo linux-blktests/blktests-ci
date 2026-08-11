@@ -92,7 +92,52 @@ yes "" | make olddefconfig
 ./scripts/config --disable CONFIG_CXL_REGION
 ./scripts/config --disable CONFIG_CXL_PMU
 ./scripts/config --disable CONFIG_DEV_DAX_CXL
+
+# Drop hardware classes unused by storage-test VMs; retain virtual displays.
+./scripts/config --disable CONFIG_DRM_AMDGPU
+./scripts/config --disable CONFIG_DRM_I915
+./scripts/config --disable CONFIG_DRM_XE
+./scripts/config --disable CONFIG_DRM_NOUVEAU
+./scripts/config --disable CONFIG_DRM_RADEON
+./scripts/config --disable CONFIG_DRM_AMD_DC
+./scripts/config --disable CONFIG_DRM_GMA500
+./scripts/config --disable CONFIG_DRM_AST
+./scripts/config --disable CONFIG_DRM_QXL
+# Wireless.
+./scripts/config --disable CONFIG_WLAN
+./scripts/config --disable CONFIG_MAC80211
+./scripts/config --disable CONFIG_CFG80211
+./scripts/config --disable CONFIG_RFKILL
+# Sound.
+./scripts/config --disable CONFIG_SOUND
+./scripts/config --disable CONFIG_SND
+
 yes "" | make olddefconfig
+
+# Fail before publishing a kernel that cannot boot the test VM.
+required_configs="
+CONFIG_VIRTIO
+CONFIG_VIRTIO_PCI
+CONFIG_VIRTIO_BLK
+CONFIG_VIRTIO_NET
+CONFIG_VIRTIO_FS
+CONFIG_FUSE_FS
+CONFIG_BTRFS_FS
+CONFIG_ISO9660_FS
+CONFIG_BLK_DEV_NULL_BLK
+CONFIG_BLK_DEV_ZONED
+CONFIG_IKCONFIG_PROC
+CONFIG_KASAN
+CONFIG_PROVE_LOCKING
+"
+missing_configs=""
+for sym in $required_configs; do
+    grep -qE "^${sym}=(y|m)\$" .config || missing_configs="${missing_configs} ${sym}"
+done
+if [ -n "$missing_configs" ]; then
+    echo "error: required kernel options are not enabled after config trim:${missing_configs}" >&2
+    exit 1
+fi
 
 #initramfs creation inspired by https://github.com/floatious/boot-scripts/blob/master/old/boot
 

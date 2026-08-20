@@ -34,6 +34,16 @@ are recreated only at the very end, which is what lifts the freeze. This runs
 before step 1 as well, so KubeVirt/longhorn are never upgraded underneath a
 live VM.
 
+``helm uninstall`` only marks the ARC objects for deletion though, so the script
+then waits for ARC to actually drain them (up to ``--drain-timeout``, after
+which the finalizers still holding the teardown open are stripped). Without that
+wait a scale set that had active runs gets recreated while its previous
+EphemeralRunnerSets are still being garbage collected, and ARC pins the new
+listener to one that then disappears: the listener crash-loops and the scale set
+shows up Offline on GitHub. Every recreated GitHub scale set is checked for
+exactly that afterwards, and its listener is deleted so ARC rebuilds it when the
+reference is stale.
+
 Before anything is torn down, an overview of the currently deployed scale sets
 (name, URL and the exact by-hand redeploy command for each) is printed and
 written to a git-ignored manifest file. Each run writes its own timestamped
@@ -64,6 +74,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,9 +117,29 @@ KIND_META = {
 
 REQUIRED_TOOLS = ("kubectl", "helm", "ansible-playbook")
 
+# The ARC controller and every scale set's listener live in this one namespace,
+# created by the k8s-install-kubevirt-actions-runner-controller role.
+ARC_NAMESPACE = "arc-systems"
+# Namespaced ARC objects a torn-down GitHub scale set leaves behind, listed in
+# the order their finalizers resolve: an EphemeralRunnerSet only goes away once
+# its EphemeralRunners have, and the AutoscalingRunnerSet only once both have.
+ARC_TEARDOWN_RESOURCES = ("ephemeralrunner", "ephemeralrunnerset", "autoscalingrunnerset")
+# Matches ARC's own requeue interval, so polling never outpaces the controller.
+POLL_SECONDS = 5
+DEFAULT_DRAIN_TIMEOUT = 600
+# Grace period for the objects to disappear once their finalizers are stripped.
+FORCE_GRACE_SECONDS = 60
+# How long ARC gets to settle on a consistent listener after a scale set is
+# recreated. Only covers a few reconciles, not a drain, so it stays short.
+LISTENER_TIMEOUT = 180
+
 
 class RedeployError(Exception):
     """Fatal, user-facing error that aborts the redeploy."""
+
+
+class ClusterReadError(RedeployError):
+    """A cluster query failed for a reason other than the object being gone."""
 
 
 @dataclass
@@ -166,6 +197,42 @@ def parse_json(text: str, *, source: str):
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise RedeployError(f"could not parse JSON output of {source}: {exc}") from exc
+
+
+def kubectl_items(resource: str, namespace: str) -> list[dict]:
+    """List a namespaced resource for polling, or raise if the cluster is unreadable.
+
+    A missing namespace reads as an empty list and a missing CRD means the
+    component was never installed, so both are legitimately "nothing there".
+    Every other failure (unreachable API server, expired credentials) raises:
+    callers poll a teardown to decide when it is safe to redeploy, and must not
+    mistake "could not tell" for "already gone".
+    """
+    proc = subprocess.run(
+        ["kubectl", "get", resource, "-n", namespace, "-o", "json",
+         "--ignore-not-found=true", "--request-timeout=30s"],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        if "doesn't have a resource type" in proc.stderr:
+            return []
+        raise ClusterReadError(
+            f"could not list {resource} in {namespace}: {proc.stderr.strip().splitlines()[-1]}"
+        )
+    data = parse_json(proc.stdout, source=f"kubectl get {resource} -n {namespace}")
+    return (data or {}).get("items", [])
+
+
+def arc_listeners(namespace: str) -> list[dict]:
+    """AutoscalingListeners serving a runner namespace.
+
+    Listeners are created in the controller namespace and are owned by neither
+    the Helm release nor (cross-namespace ownership does not exist in
+    Kubernetes) the AutoscalingRunnerSet, so they can only be found through the
+    back-reference in their spec.
+    """
+    return [item for item in kubectl_items("autoscalinglistener", ARC_NAMESPACE)
+            if item.get("spec", {}).get("autoscalingRunnerSetNamespace") == namespace]
 
 
 def preflight() -> None:
@@ -383,6 +450,185 @@ def terminate(scale_set: RunnerScaleSet, *, dry_run: bool) -> None:
             dry_run=dry_run, check=False)
 
 
+def pending_teardown(scale_set: RunnerScaleSet) -> list[tuple[str, str, str]]:
+    """ARC objects still alive for a torn-down scale set, as (kind, ns, name).
+
+    GitLab runners are plain Deployments that ``helm uninstall`` removes
+    outright, so only ARC scale sets have anything left to wait for.
+    """
+    if scale_set.kind != GITHUB:
+        return []
+    pending = [(resource, scale_set.namespace, item["metadata"]["name"])
+               for resource in ARC_TEARDOWN_RESOURCES
+               for item in kubectl_items(resource, scale_set.namespace)]
+    pending += [("autoscalinglistener", ARC_NAMESPACE, item["metadata"]["name"])
+                for item in arc_listeners(scale_set.namespace)]
+    return pending
+
+
+def force_teardown(pending: list[tuple[str, str, str]]) -> None:
+    """Delete what is left and strip its finalizers, in dependency order.
+
+    Only reached once --drain-timeout has expired. The finalizer that blocks is
+    ARC's runner-registration one: its cleanup asks the Actions service to
+    remove the runner and the service refuses while the job is still running,
+    which ARC then retries forever. Dropping it abandons that deregistration,
+    so the runner stays registered on the GitHub side until GitHub reaps it.
+
+    Each object is deleted as well as unblocked, because ``helm uninstall`` is
+    best-effort: an object that never got a deletion timestamp would survive
+    having its finalizers cleared.
+    """
+    order = {resource: i for i, resource in enumerate(ARC_TEARDOWN_RESOURCES)}
+    for resource, namespace, name in sorted(pending, key=lambda p: order.get(p[0], len(order))):
+        run(["kubectl", "delete", resource, name, "-n", namespace,
+             "--ignore-not-found=true", "--wait=false"], check=False)
+        run(["kubectl", "patch", resource, name, "-n", namespace, "--type=merge",
+             "-p", '{"metadata":{"finalizers":null}}'], check=False)
+
+
+def drain(watched: list[RunnerScaleSet], timeout: int) -> list[tuple[str, str, str]]:
+    """Poll until nothing is pending, returning whatever is left at the deadline."""
+    deadline = time.monotonic() + timeout
+    reported = ""
+    while True:
+        try:
+            remaining = [obj for s in watched for obj in pending_teardown(s)]
+        except ClusterReadError as exc:
+            # Keep waiting rather than reading an unreachable cluster as empty.
+            if time.monotonic() >= deadline:
+                raise
+            if str(exc) != reported:
+                _log(f"     WARNING: {exc}; retrying")
+                reported = str(exc)
+            time.sleep(POLL_SECONDS)
+            continue
+        if not remaining:
+            return []
+        summary = ", ".join(sorted({f"{ns}/{res}" for res, ns, _ in remaining}))
+        if summary != reported:
+            _log(f"     still draining: {summary}")
+            reported = summary
+        if time.monotonic() >= deadline:
+            return remaining
+        time.sleep(POLL_SECONDS)
+
+
+def wait_for_teardown(scale_sets: list[RunnerScaleSet], *, timeout: int, dry_run: bool) -> None:
+    """Block until ARC has finished tearing every scale set down.
+
+    ``helm uninstall`` only marks the AutoscalingRunnerSet for deletion; ARC
+    then drains it behind a finalizer chain that refuses to remove a runner
+    while its job is still running (the Actions service answers
+    JobStillRunningError) and retries every 30s with no deadline of its own. An
+    idle scale set is gone in a couple of seconds, but one with active runs
+    stays alive for as long as the job does.
+
+    Returning early is what breaks a redeploy: install-k8s-requirements would
+    upgrade KubeVirt and longhorn underneath still-live runners, and the
+    recreate would race objects that are still being garbage collected.
+    """
+    watched = [s for s in scale_sets if s.kind == GITHUB]
+    if not watched:
+        return
+    _log(f"  -> waiting up to {timeout}s for ARC to drain {len(watched)} scale set(s)")
+    if dry_run:
+        _log("    [dry-run] kubectl get "
+             f"{','.join(ARC_TEARDOWN_RESOURCES)} until every scale set is gone")
+        return
+    remaining = drain(watched, timeout)
+    if not remaining:
+        _log("     drained")
+        return
+    _log(f"     WARNING: still draining after {timeout}s; forcing the teardown. "
+         "Any runner whose job never finished stays registered on the provider side.")
+    force_teardown(remaining)
+    remaining = drain(watched, FORCE_GRACE_SECONDS)
+    if remaining:
+        # Redeploying on top of these is what this whole wait exists to prevent,
+        # so stop while the overview manifest is still the way back in.
+        raise RedeployError(
+            "could not tear down: "
+            + ", ".join(f"{ns}/{res}/{name}" for res, ns, name in remaining)
+            + ". Refusing to redeploy on top of them; clean them up by hand and "
+              "resume with --from-log."
+        )
+    _log("     drained (forced)")
+
+
+def repair_listener(scale_set: RunnerScaleSet, *, dry_run: bool) -> str | None:
+    """Make ARC rebuild a listener that points at a vanished EphemeralRunnerSet.
+
+    gha-runner-scale-set 0.14.x can create several EphemeralRunnerSets within
+    the same second when a scale set is installed. It pins the
+    AutoscalingListener to whichever one that reconcile happened to see, then
+    garbage collects the losers -- and since it picks the "latest" by a
+    second-granularity creationTimestamp with no tie-breaker, which set survives
+    is a coin flip. The listener reference is never re-checked (the controller
+    only compares two annotation hashes), so a listener left pointing at a
+    deleted set crash-loops on "ephemeralrunnersets ... not found", never opens
+    a session with the Actions service, and the scale set shows up Offline on
+    GitHub. Deleting the listener is what makes the controller rebuild it
+    against the set that survived.
+
+    Upstream fix actions/actions-runner-controller#4502 landed after the 0.14.2
+    tag, so no released chart carries it yet. Returns a message describing the
+    problem if the listener could not be made consistent, else None.
+    """
+    if scale_set.kind != GITHUB or dry_run:
+        return None
+    deadline = time.monotonic() + LISTENER_TIMEOUT
+    # A rebuilt listener reuses its name (ARC derives it from the scale set), so
+    # generations are told apart by UID: one repair attempt per generation.
+    repaired: set[str] = set()
+    # The losing EphemeralRunnerSets linger for a moment, so a single
+    # healthy-looking poll can be the calm before the listener's target
+    # disappears. Only trust a reading that an identical later one agrees with.
+    confirmed: set[tuple[str, str]] | None = None
+    reported = ""
+    while True:
+        try:
+            # A set already marked for deletion is doomed, so a listener aimed
+            # at one is stale even though the object is still readable.
+            live = {item["metadata"]["name"]
+                    for item in kubectl_items("ephemeralrunnerset", scale_set.namespace)
+                    if not item["metadata"].get("deletionTimestamp")}
+            listeners = [l for l in arc_listeners(scale_set.namespace)
+                         if l["metadata"]["uid"] not in repaired]
+        except ClusterReadError as exc:
+            # Never delete a listener on the strength of a failed query.
+            if time.monotonic() >= deadline:
+                return f"could not verify the ARC listener: {exc}"
+            if str(exc) != reported:
+                _log(f"     WARNING: {exc}; retrying")
+                reported = str(exc)
+            confirmed = None
+            time.sleep(POLL_SECONDS)
+            continue
+        stale = [l for l in listeners
+                 if l.get("spec", {}).get("ephemeralRunnerSetName") not in live]
+        if live and listeners and not stale:
+            settled = {(l["metadata"]["uid"], l["spec"]["ephemeralRunnerSetName"])
+                       for l in listeners}
+            if settled == confirmed:
+                return None
+            confirmed = settled
+        else:
+            confirmed = None
+        for listener in stale:
+            repaired.add(listener["metadata"]["uid"])
+            _log(f"     WARNING: listener {listener['metadata']['name']} targets "
+                 f"EphemeralRunnerSet {listener['spec'].get('ephemeralRunnerSetName')!r}, "
+                 f"which does not exist; deleting it so ARC rebuilds it")
+            run(["kubectl", "delete", "autoscalinglistener", listener["metadata"]["name"],
+                 "-n", ARC_NAMESPACE, "--ignore-not-found=true", "--wait=false"],
+                check=False)
+        if time.monotonic() >= deadline:
+            return (f"ARC listener did not settle on a live EphemeralRunnerSet within "
+                    f"{LISTENER_TIMEOUT}s; the scale set will stay Offline on GitHub")
+        time.sleep(POLL_SECONDS)
+
+
 def recreate_argv(scale_set: RunnerScaleSet, *, relative: bool = False,
                   kubeconfig: str | None = None) -> list[str]:
     """Build the ansible-playbook argv that recreates one scale set.
@@ -573,6 +819,8 @@ def print_plan(scale_sets: list[RunnerScaleSet], *, skip_install: bool,
                 _log(f"     - {s.label:24s} helm uninstall {s.release} (-n {s.namespace}) + delete VMs")
     else:
         _log("     - (no runner scale sets)")
+    if reload_from is None and any(s.kind == GITHUB for s in scale_sets):
+        _log("     then wait for ARC to drain them (jobs still running hold this open)")
     step += 1
     if not skip_install:
         _log(f"{step}. Re-run install-k8s-requirements.yaml")
@@ -629,6 +877,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip step 1; only terminate and redeploy the runner scale sets.",
     )
     parser.add_argument(
+        "--drain-timeout", metavar="SECONDS", type=int, default=DEFAULT_DRAIN_TIMEOUT,
+        help="How long to wait for ARC to finish tearing the scale sets down "
+             "before forcing it. ARC will not remove a runner while its job is "
+             "still running and retries forever, so a long job would otherwise "
+             "stall the redeploy; forcing strips the finalizers and leaves that "
+             "runner registered on the GitHub side.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="Show the plan and the commands that would run; touch nothing.",
     )
@@ -669,6 +925,10 @@ def main(argv: list[str] | None = None) -> int:
         raise RedeployError(f"unknown --kinds value(s): {', '.join(unknown)} (choose from github, gitlab)")
     if args.no_become_password and args.become_password_file:
         raise RedeployError("--no-become-password and --become-password-file are mutually exclusive")
+    if args.drain_timeout < 0:
+        # A negative deadline is already in the past, which would skip the drain
+        # and go straight to stripping finalizers off live runners.
+        raise RedeployError("--drain-timeout must not be negative")
 
     preflight()
 
@@ -754,6 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
         if reload_from is None:
             for s in scale_sets:
                 terminate(s, dry_run=True)
+            wait_for_teardown(scale_sets, timeout=args.drain_timeout, dry_run=True)
         if not args.skip_install_requirements:
             install_requirements(None, None, dry_run=True, kubeconfig=kubeconfig_override)
         for s in scale_sets:
@@ -791,6 +1052,9 @@ def main(argv: list[str] | None = None) -> int:
         _log("Step: terminating active runs and freezing new job acceptance")
         for s in scale_sets:
             terminate(s, dry_run=False)
+        # Every scale set is uninstalled first so they all drain in parallel;
+        # waiting inside the loop above would serialize the job drains.
+        wait_for_teardown(scale_sets, timeout=args.drain_timeout, dry_run=False)
 
     if not args.skip_install_requirements:
         _log("")
@@ -806,6 +1070,11 @@ def main(argv: list[str] | None = None) -> int:
         except RedeployError as exc:
             failures.append(f"{s.label}: {exc}")
             _log(f"  ERROR redeploying {s.label}: {exc}")
+            continue
+        problem = repair_listener(s, dry_run=False)
+        if problem:
+            failures.append(f"{s.label}: {problem}")
+            _log(f"  ERROR {s.label}: {problem}")
 
     _log("")
     if failures:

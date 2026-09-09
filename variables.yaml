@@ -105,6 +105,22 @@ kpd_instances:
       stable: []
       for-next: ["for-next"]
       __DEFAULT__: ["linus-master", "for-next"]
+  - name: linux-nvme
+    patchwork_project: linux-nvme
+    patchwork_project_id: 434
+    target_repo: "https://github.com/linux-blktests/linux-nvme"
+    ci_repo: "https://github.com/linux-blktests/blktests-kpd-ci.git"
+    ci_branch: "linux-nvme"
+    lock_file: "locks/linux-nvme.json"
+    branches:
+      nvme-7.3:
+        upstream: "git://git.infradead.org/nvme.git"
+        upstream_branch: "nvme-7.3"
+    tag_to_branch_mapping:
+      PULL: []
+      blktests: []
+      stable: []
+      __DEFAULT__: ["nvme-7.3"]
 
 # KPD Optional: Email notifications. Set kpd_smtp_host in secrets.enc to enable.
 # kpd_smtp_port: 465

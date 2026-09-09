@@ -6,6 +6,59 @@
 
 - include_vars: ../../../../variables.yaml
 
+- name: "Check that at least one kpd instance is declared"
+  assert:
+    that:
+      - kpd_instances is defined
+      - kpd_instances | length > 0
+    fail_msg: >-
+      kpd_instances is empty or undefined in variables.yaml. kpd is enabled
+      (kpd_github_app_id is set) but there is nothing to deploy.
+
+# Names become Kubernetes object names, and a bad one is only rejected by the
+# API server, i.e. after the earlier steps have already changed the cluster.
+- name: "Validate the kpd instance names"
+  assert:
+    that:
+      - item.name is match('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+      - item.name | length <= 40
+    fail_msg: >-
+      kpd instance name '{{ item.name }}' cannot be used as a Kubernetes object
+      name. Use lowercase alphanumerics and dashes, at most 40 characters.
+  loop: "{{ kpd_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: "Check that kpd instance names and lock files are unique"
+  assert:
+    that:
+      - kpd_instances | map(attribute='name') | list | unique | length
+        == kpd_instances | length
+      - kpd_instances | map(attribute='lock_file') | list | unique | length
+        == kpd_instances | length
+    fail_msg: >-
+      Two kpd instances share a name or a lock_file. Duplicate names collide on
+      the same Kubernetes objects. A duplicate lock_file means only one of the
+      instances ever holds the lock, the others stay in standby forever and pick
+      up no series, with nothing in their log to say they are misconfigured.
+
+- name: "Validate the kpd tag_to_branch_mapping entries"
+  assert:
+    that:
+      - item.tag_to_branch_mapping | dict2items | selectattr('value', 'string')
+        | list | length == 0
+      - item.tag_to_branch_mapping.values() | list | flatten
+        | reject('in', item.branches) | list | length == 0
+    fail_msg: >-
+      kpd instance '{{ item.name }}' has an invalid tag_to_branch_mapping. Every
+      value must be a list of branch names defined in its `branches`, but it
+      maps to
+      {{ item.tag_to_branch_mapping.values() | list | flatten | reject('in', item.branches) | list }}.
+      kpd would reject this config on startup.
+  loop: "{{ kpd_instances }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: "Ensure the kernel-patches-daemon namespace exists"
   kubernetes.core.k8s:
     name: kernel-patches-daemon
@@ -13,75 +66,21 @@
     kind: Namespace
     state: present
 
-- name: "Get private docker registry IP"
-  ansible.builtin.set_fact:
-    registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
+- name: "Find the kpd instances currently deployed on this cluster"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    namespace: kernel-patches-daemon
+    label_selectors:
+      - app=kpd
+  register: kpd_deployed
 
-- name: "Create temp directory for kpd image build"
-  tempfile:
-    state: directory
-  register: kpd_build_dir
-
-- name: "Clone kernel-patches-daemon repository"
-  git:
-    repo: "{{ kpd_image_repo }}"
-    dest: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
-    version: "{{ kpd_image_branch }}"
-    depth: 1
-
-- name: "Read labels.json from kpd repository"
-  slurp:
-    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/labels.json"
-  register: kpd_labels_json_raw
-
-- name: "Read template_base from kpd repository"
-  slurp:
-    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_base"
-  register: kpd_template_base_raw
-
-- name: "Read template_success from kpd repository"
-  slurp:
-    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_success"
-  register: kpd_template_success_raw
-
-- name: "Read template_failure from kpd repository"
-  slurp:
-    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_failure"
-  register: kpd_template_failure_raw
-
-- name: "Store kpd config file contents"
+- name: "Determine which deployed kpd instances are no longer declared"
   set_fact:
-    kpd_labels_json: "{{ kpd_labels_json_raw.content | b64decode }}"
-    kpd_template_base: "{{ kpd_template_base_raw.content | b64decode }}"
-    kpd_template_success: "{{ kpd_template_success_raw.content | b64decode }}"
-    kpd_template_failure: "{{ kpd_template_failure_raw.content | b64decode }}"
-
-- name: "Ensure poetry is installed"
-  pip:
-    name: poetry
-    state: present
-
-- name: "Generate poetry.lock if absent"
-  command: poetry lock
-  args:
-    chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
-    creates: "{{ kpd_build_dir.path }}/kernel-patches-daemon/poetry.lock"
-
-- name: "Build and push kernel-patches-daemon image to private registry"
-  shell: |
-    docker build \
-      --build-arg http_proxy \
-      --build-arg https_proxy \
-      --build-arg no_proxy \
-      -t {{ registry_ip }}:32000/kernel-patches-daemon:latest .
-    docker push {{ registry_ip }}:32000/kernel-patches-daemon:latest
-  args:
-    chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
-
-- name: "Cleanup kpd build directory"
-  file:
-    path: "{{ kpd_build_dir.path }}"
-    state: absent
+    kpd_orphans: >-
+      {{ kpd_deployed.resources | map(attribute='metadata.name') | list
+         | difference(kpd_instances | map(attribute='name')
+                      | map('regex_replace', '^', 'kpd-') | list) }}
 
 - name: "Check if mitmproxy is deployed in the cluster"
   kubernetes.core.k8s_info:
@@ -106,57 +105,59 @@
       data: "{{ mitmproxy_ca_configmap.resources[0].data }}"
   when: mitmproxy_enabled
 
-- name: "Template kpd configuration file"
-  set_fact:
-    kpd_config_json: "{{ lookup('template', '../templates/kpd-config.json.j2') }}"
+# The image and the config files baked into it are the same for every instance,
+# so this runs once no matter how many instances are deployed. It is also the
+# step most likely to fail, which is why nothing is torn down before it.
+- name: "Build the shared kpd image"
+  include_tasks: image.yaml
 
-- name: "Create kpd-config Secret"
+# Everything below replaces running daemons, so it only starts once the image is
+# in the registry and the instance list has been validated.
+
+# Superseded by the per-instance kpd-<name> objects. Left running, the old
+# daemon would answer to this cluster's name on the same lock file as the
+# linux-block instance, so both would consider the lock theirs and go active.
+# `wait` matters: the pod has to be gone, and its lock released, before its
+# replacement comes up.
+- name: "Remove the pre-multi-instance kpd objects"
   kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: kpd-config
-        namespace: kernel-patches-daemon
-      stringData:
-        kpd.json: "{{ kpd_config_json }}"
-        github-app-private-key.pem: "{{ kpd_github_app_private_key }}"
-        labels.json: "{{ kpd_labels_json }}"
-        template_base: "{{ kpd_template_base }}"
-        template_success: "{{ kpd_template_success }}"
-        template_failure: "{{ kpd_template_failure }}"
-
-- name: "Template leader-election wrapper script"
-  set_fact:
-    kpd_leader_election_script: "{{ lookup('template', '../templates/kpd-leader-election.py.j2') }}"
-
-- name: "Create kpd-leader-election ConfigMap"
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: kpd-leader-election
-        namespace: kernel-patches-daemon
-      data:
-        kpd-leader-election.py: "{{ kpd_leader_election_script }}"
-
-- name: "Deploy kernel-patches-daemon"
-  kubernetes.core.k8s:
-    state: present
-    template: ../templates/kpd-deployment.yaml.j2
-
-- name: "Wait for kernel-patches-daemon to be ready"
-  kubernetes.core.k8s_info:
-    kind: Deployment
-    name: kernel-patches-daemon
+    state: absent
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
     namespace: kernel-patches-daemon
-  register: kpd_deployment
-  until: >-
-    kpd_deployment.resources is defined and
-    kpd_deployment.resources | length > 0 and
-    (kpd_deployment.resources[0].status.readyReplicas | default(0)) >= 1
-  retries: 30
-  delay: 10
+    wait: true
+    wait_timeout: 180
+  loop:
+    - {api_version: apps/v1, kind: Deployment, name: kernel-patches-daemon}
+    - {api_version: v1, kind: Secret, name: kpd-config}
+    - {api_version: v1, kind: ConfigMap, name: kpd-leader-election}
+  loop_control:
+    label: "{{ item.kind }}/{{ item.name }}"
+
+# Renaming an instance would otherwise leave the old daemon running forever,
+# holding a lock nothing refreshes or, worse, still working the same fork.
+- name: "Remove kpd instances that are no longer declared in kpd_instances"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.1.api_version }}"
+    kind: "{{ item.1.kind }}"
+    name: "{{ item.0 }}{{ item.1.suffix }}"
+    namespace: kernel-patches-daemon
+    wait: true
+    wait_timeout: 180
+  loop: >-
+    {{ kpd_orphans | product([
+         {'api_version': 'apps/v1', 'kind': 'Deployment', 'suffix': ''},
+         {'api_version': 'v1', 'kind': 'Secret', 'suffix': '-config'},
+         {'api_version': 'v1', 'kind': 'ConfigMap', 'suffix': '-leader-election'},
+       ]) | list }}
+  loop_control:
+    label: "{{ item.1.kind }}/{{ item.0 }}{{ item.1.suffix }}"
+
+- name: "Deploy the kpd instances"
+  include_tasks: instance.yaml
+  loop: "{{ kpd_instances }}"
+  loop_control:
+    loop_var: instance
+    label: "{{ instance.name }}"

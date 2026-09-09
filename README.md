@@ -249,9 +249,14 @@ installed into the trust store of every component that needs it.
 ### Kernel Patches Daemon (kpd)
 
 [kernel-patches-daemon](https://github.com/linux-blktests/kernel-patches-daemon/tree/blktests)
-(kpd) watches patchwork for new series sent to the linux-block mailing list,
-applies them on top of a GitHub repository and opens pull requests that trigger
-CI workflows.
+(kpd) watches patchwork for new series sent to a kernel mailing list, applies
+them on top of a GitHub repository and opens pull requests that trigger CI
+workflows.
+
+One kpd *instance* covers one mailing list feeding one fork. Instances are
+declared in `kpd_instances` in `variables.yaml` and each is deployed as
+`kpd-<name>` in the `kernel-patches-daemon` namespace, all sharing one image.
+See [Running several kpd instances](#running-several-kpd-instances).
 
 kpd is deployed automatically when `kpd_github_app_id` is defined in
 `secrets.enc`. To enable it:
@@ -272,7 +277,8 @@ kpd is deployed automatically when `kpd_github_app_id` is defined in
      `kpd_github_app_private_key` secret.
    - In the left menu hit "Install App" and click "Install" for the organisation
      you want to use.
-   - Select repository access for `kpd_target_repo` and `kpd_lock_repo`.
+   - Select repository access for `kpd_lock_repo` and the `target_repo` of every
+     entry in `kpd_instances`. One App serves all instances.
    - Note the installation ID (last part of the URL) for
      `kpd_github_app_installation_id`.
 
@@ -280,7 +286,8 @@ kpd is deployed automatically when `kpd_github_app_id` is defined in
    whichever name is set in `kpd_lock_repo` in `variables.yaml`). It is used for
    cross-cluster leader election. The GitHub App must have Contents read/write
    access to this repository. Initialize it with a README or leave it empty; the
-   lock file is created automatically.
+   lock files are created automatically, including any leading directories in an
+   instance's `lock_file`.
 
 3. **Add the secrets** to `secrets.enc` via `ansible-vault edit secrets.enc`:
    ```yaml
@@ -303,14 +310,15 @@ kpd is deployed automatically when `kpd_github_app_id` is defined in
 
 #### Cross-cluster leader election
 
-kpd can be deployed across multiple disjoint Kubernetes clusters with automatic
-active/passive failover. Only one instance is active at a time; the others stay
-on standby.
+Each kpd instance can be deployed across multiple disjoint Kubernetes clusters
+with automatic active/passive failover. Only one cluster runs a given instance at
+a time; the others stay on standby. Election happens per instance, so one cluster
+can be active for `linux-block` while another is active for `linux-nvme`.
 
-The leader election uses a file (`lock.json`) in the `kpd_lock_repo` GitHub
+The leader election uses an instance's `lock_file` in the `kpd_lock_repo` GitHub
 repository as a distributed lock:
 
-- The active instance writes its cluster name and a timestamp to `lock.json`
+- The active cluster writes its cluster name and a timestamp to the lock file
   through the GitHub Contents API. GitHub's SHA-based compare-and-swap prevents
   concurrent writers.
 - A heartbeat updates the timestamp every `kpd_heartbeat_interval_seconds`
@@ -320,11 +328,67 @@ repository as a distributed lock:
 - On graceful shutdown the active instance deletes the lock file, so failover is
   immediate.
 
+#### Running several kpd instances
+
+Each entry of `kpd_instances` in `variables.yaml` takes these fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | Instance name, used for the Kubernetes object names. Lowercase alphanumerics and dashes. |
+| `patchwork_project` | Patchwork project `link_name`, e.g. `linux-block`. |
+| `patchwork_project_id` | Numeric project id used in the search pattern. |
+| `target_repo` | Fork that series are applied to and pull requests opened against. |
+| `ci_repo`, `ci_branch` | Branch holding the workflow files merged into every series branch. |
+| `lock_file` | Leader-election lock inside `kpd_lock_repo`, one per instance. |
+| `branches` | Pull request base branches, each with the `upstream` tree and `upstream_branch` it tracks. kpd derives `<branch>_base` and `series/<id>=><branch>` from each key. |
+| `tag_to_branch_mapping` | Patchwork tag to base branches, `__DEFAULT__` for the untagged case. Declaration order is significant: kpd takes the first tag the series carries. |
+| `lookback` | Optional. Days of patchwork history to scan, 7 by default. |
+| `active` | Optional. Per-instance override of `kpd_active`. |
+
+Add an entry and re-run `install-k8s-requirements.yaml`, or `redeploy.py`, the
+same way as for any other change. Every declared instance is deployed, and the
+image is built once per run no matter how many there are.
+
+An instance is not useful on its own. It also needs:
+
+- a runner scale set whose name matches the `runs-on` of the workflow, see
+  [GitHub runner scale sets](#github-runner-scale-sets),
+- a branch in `ci_repo` holding that workflow, referenced by its `ci_branch`.
+
+Nothing has to change in the daemon itself. The generated `kpd.json` pins
+`log_extractor` to `blktests` for every instance, which is what teaches kpd to
+read the `KPD:` markers the workflow prints, so a new mailing list needs no
+patch there.
+
+Because `kpd_instances` decides which lists are watched and where the results
+land, it is deliberately the same on every cluster. `kubeconfig`,
+`kpd_cluster_name` and `kpd_active` are the per-cluster knobs.
+
+Each instance holds its own lock file inside `kpd_lock_repo`, and the playbook
+refuses to deploy a list where two instances share one `lock_file`. That case is
+otherwise undetectable at runtime: the loser stays in standby forever and picks
+up no series, with nothing in its log to say it is misconfigured.
+
+The inverse mistake is worse and the playbook cannot catch it. Giving two
+clusters that run the *same* instance different paths makes both of them active,
+and they then race to force-push the same `series/*` branches. When changing a
+`lock_file`, roll every cluster of that instance over in the same window.
+
+Inspect what is running:
+```
+kubectl get deploy,pod -n kernel-patches-daemon -l app=kpd
+kubectl logs -n kernel-patches-daemon -l kpd-instance=linux-block -f
+```
+The wrapper logs its instance name, lock file and lock decisions on startup, so
+the first lines of a pod's log say whether it went active or standby and why.
+
 #### Manual override
 
 Set `kpd_active: false` in `variables.yaml` (or uncomment the existing line) to
 force a cluster into permanent standby regardless of the lock state. This is
-useful during maintenance. Re-run the playbook after changing the value.
+useful during maintenance. A single instance can be parked instead by setting
+`active: "false"` on its `kpd_instances` entry. Re-run the playbook after
+changing either value.
 
 ## GitHub runner scale sets
 
@@ -968,3 +1032,8 @@ Known limitations and planned improvements:
 - Add an Ansible playbook for registering the self-hosted registry on the
   workstation in a non-destructive way.
 - Add an Ansible playbook for deleting a runner scale set.
+- Pin the kpd Deployment to the image digest that the role just pushed instead
+  of the mutable `kernel-patches-daemon:latest` tag. A rebuilt image currently
+  only reaches a running instance when its pod happens to restart, because the
+  pod spec is unchanged. Config and wrapper changes already roll the pod through
+  a checksum annotation.

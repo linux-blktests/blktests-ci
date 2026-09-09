@@ -1,79 +1,77 @@
-{
-  "version": 3,
-  "patchwork": {
-    "server": "patchwork.kernel.org",
-    "project": "linux-block",
-    "search_patterns": [
-      {
-        "archived": false,
-        "project": 241
-      }
-    ],
-    "api_username": "{{ kpd_patchwork_api_username }}",
-    "api_token": "{{ kpd_patchwork_api_token }}",
-    "lookback": 7
-  },
-  "tag_to_branch_mapping": {
-    "PULL": [
-    ],
-    "blktests": [
-    ],
-    "blktrace": [
-    ],
-    "stable": [
-    ],
-    "for-next": [
-      "for-next"
-    ],
-    "__DEFAULT__": [
-      "linus-master",
-      "for-next"
-    ]
-  },
-  "branches": {
-    "for-next": {
-      "github_app_auth": {
-        "app_id": "{{ kpd_github_app_id }}",
-        "installation_id": {{ kpd_github_app_installation_id }},
-        "private_key_path": "/app/configs/github-app-private-key.pem"
+{#-
+SPDX-License-Identifier: GPL-2.0-or-later
+
+Copyright (c) 2026 Western Digital Corporation or its affiliates.
+
+Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+kpd.json for one instance of `kpd_instances`, rendered with `instance` set to
+that entry. Built as a dict and serialised at the end rather than written out as
+literal JSON, so no key needs a hand-placed comma and optional sections can be
+added without the surrounding punctuation changing.
+
+log_extractor is pinned rather than configurable: every instance deployed from
+here is tested by the blktests CI, which emits the same job log markers whatever
+mailing list the series came from.
+-#}
+{%- set config = {
+      "version": 3,
+      "patchwork": {
+        "server": kpd_patchwork_server,
+        "project": instance.patchwork_project,
+        "search_patterns": [
+          {"archived": false, "project": instance.patchwork_project_id},
+        ],
+        "api_username": kpd_patchwork_api_username,
+        "api_token": kpd_patchwork_api_token,
+        "lookback": instance.lookback | default(7),
       },
-      "repo": "{{ kpd_target_repo }}",
-      "upstream": "https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git",
-      "upstream_branch": "for-next",
-      "ci_repo": "{{ kpd_ci_repo }}",
-      "ci_branch": "{{ kpd_ci_branch }}"
-    },
-    "linus-master": {
-      "github_app_auth": {
-        "app_id": "{{ kpd_github_app_id }}",
-        "installation_id": {{ kpd_github_app_installation_id }},
-        "private_key_path": "/app/configs/github-app-private-key.pem"
-      },
-      "repo": "{{ kpd_target_repo }}",
-      "upstream": "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git",
-      "upstream_branch": "master",
-      "ci_repo": "{{ kpd_ci_repo }}",
-      "ci_branch": "{{ kpd_ci_branch }}"
+      "tag_to_branch_mapping": instance.tag_to_branch_mapping,
+      "branches": {},
+      "base_directory": "/tmp/repos",
+      "certificate_path": "/etc/ssl/certs/ca-certificates.crt",
+      "log_extractor": "blktests",
     }
-  },
-  "base_directory": "/tmp/repos",
-  "certificate_path": "/etc/ssl/certs/ca-certificates.crt"{% if kpd_smtp_host is defined %},
-  "email": {
-    "host": "{{ kpd_smtp_host }}",
-    "port": {{ kpd_smtp_port | default(465) }},
-    "from": "{{ kpd_smtp_from }}",
-    "user": {{ kpd_smtp_user | default(None) | to_json }},
-    "pass": {{ kpd_smtp_pass | default(None) | to_json }},
-    "to": {{ kpd_smtp_to | default([]) | to_json }},
-    "cc": {{ kpd_smtp_cc | default([]) | to_json }},
-    "use_tls": {{ kpd_smtp_tls | default(true) | to_json }},
-    "http_proxy": {{ kpd_smtp_http_proxy | default(None) | to_json }},
-    "submitter_allowlist": {{ kpd_smtp_submitter_allowlist | default([]) | to_json }},
-    "ignore_allowlist": {{ kpd_smtp_ignore_allowlist | default(false) | to_json }},
-    "template_base": "/app/configs/template_base",
-    "template_merge_conflict": null,
-    "template_success": "/app/configs/template_success",
-    "template_failure": "/app/configs/template_failure"
-  }
-{% endif %}
-}
+-%}
+{%- for name, branch in instance.branches.items() -%}
+{%-   set _ = config["branches"].update({
+        name: {
+          "github_app_auth": {
+            "app_id": kpd_github_app_id | string,
+            "installation_id": kpd_github_app_installation_id | int,
+            "private_key_path": "/app/configs/github-app-private-key.pem",
+          },
+          "repo": instance.target_repo,
+          "upstream": branch.upstream,
+          "upstream_branch": branch.upstream_branch,
+          "ci_repo": instance.ci_repo,
+          "ci_branch": instance.ci_branch,
+        },
+      })
+-%}
+{%- endfor -%}
+{%- if kpd_smtp_host is defined -%}
+{%-   set _ = config.update({
+        "email": {
+          "host": kpd_smtp_host,
+          "port": kpd_smtp_port | default(465),
+          "from": kpd_smtp_from,
+          "user": kpd_smtp_user | default(none),
+          "pass": kpd_smtp_pass | default(none),
+          "to": kpd_smtp_to | default([]),
+          "cc": kpd_smtp_cc | default([]),
+          "use_tls": kpd_smtp_tls | default(true),
+          "http_proxy": kpd_smtp_http_proxy | default(none),
+          "submitter_allowlist": kpd_smtp_submitter_allowlist | default([]),
+          "ignore_allowlist": kpd_smtp_ignore_allowlist | default(false),
+          "template_base": "/app/configs/template_base",
+          "template_merge_conflict": none,
+          "template_success": "/app/configs/template_success",
+          "template_failure": "/app/configs/template_failure",
+        },
+      })
+-%}
+{%- endif -%}
+{#- Key order is load-bearing: kpd walks tag_to_branch_mapping in order and takes
+    the first tag the series carries, so sorting would silently re-prioritise it. -#}
+{{ config | to_nice_json(sort_keys=false) }}

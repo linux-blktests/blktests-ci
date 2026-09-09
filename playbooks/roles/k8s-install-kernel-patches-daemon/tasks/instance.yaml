@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# Deploys one kpd instance as kpd-<name>. Included in a loop from main.yaml with
+# `instance` set to one entry of kpd_instances.
+
+- name: "Template kpd configuration file for {{ instance.name }}"
+  set_fact:
+    kpd_config_json: "{{ lookup('template', '../templates/kpd-config.json.j2') }}"
+
+- name: "Create kpd-{{ instance.name }}-config Secret"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "kpd-{{ instance.name }}-config"
+        namespace: kernel-patches-daemon
+      stringData:
+        kpd.json: "{{ kpd_config_json }}"
+        github-app-private-key.pem: "{{ kpd_github_app_private_key }}"
+        labels.json: "{{ kpd_labels_json }}"
+        template_base: "{{ kpd_template_base }}"
+        template_success: "{{ kpd_template_success }}"
+        template_failure: "{{ kpd_template_failure }}"
+
+- name: "Template leader-election wrapper script for {{ instance.name }}"
+  set_fact:
+    kpd_leader_election_script: "{{ lookup('template', '../templates/kpd-leader-election.py.j2') }}"
+
+- name: "Create kpd-{{ instance.name }}-leader-election ConfigMap"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "kpd-{{ instance.name }}-leader-election"
+        namespace: kernel-patches-daemon
+      data:
+        kpd-leader-election.py: "{{ kpd_leader_election_script }}"
+
+- name: "Deploy kpd-{{ instance.name }}"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/kpd-deployment.yaml.j2
+
+- name: "Wait for kpd-{{ instance.name }} to be ready"
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    name: "kpd-{{ instance.name }}"
+    namespace: kernel-patches-daemon
+  register: kpd_deployment
+  until: >-
+    kpd_deployment.resources is defined and
+    kpd_deployment.resources | length > 0 and
+    (kpd_deployment.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10

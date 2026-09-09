@@ -72,15 +72,40 @@ private_container_registry_size: "800Gi"
 # secrets.enc. See the README for the full list of required secret variables.
 kpd_image_repo: "https://github.com/linux-blktests/kernel-patches-daemon.git"
 kpd_image_branch: "blktests"
-kpd_target_repo: "https://github.com/linux-blktests/linux-block"
-kpd_ci_repo: "https://github.com/linux-blktests/blktests-kpd-ci.git"
-kpd_ci_branch: "main"
+kpd_patchwork_server: "patchwork.kernel.org"
 kpd_lock_repo: "linux-blktests/blktests-kpd-lock"
 kpd_lock_ttl_seconds: 1200
 kpd_heartbeat_interval_seconds: 300
 kpd_cluster_name: "cluster-1"  # unique name per cluster, change for each deployment
-# Set kpd_active to false to force this cluster into standby (manual override)
+# Set kpd_active to false to force this cluster into standby (manual override).
+# Individual instances can override it with `active:` below.
 # kpd_active: false
+
+# One entry per patchwork project. See "Running several kpd instances" in the
+# README for the field reference.
+kpd_instances:
+  - name: linux-block
+    patchwork_project: linux-block
+    patchwork_project_id: 241
+    target_repo: "https://github.com/linux-blktests/linux-block"
+    ci_repo: "https://github.com/linux-blktests/blktests-kpd-ci.git"
+    ci_branch: "main"
+    lock_file: "locks/linux-block.json"
+    branches:
+      linus-master:
+        upstream: "https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
+        upstream_branch: "master"
+      for-next:
+        upstream: "https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git"
+        upstream_branch: "for-next"
+    tag_to_branch_mapping:
+      PULL: []
+      blktests: []
+      blktrace: []
+      stable: []
+      for-next: ["for-next"]
+      __DEFAULT__: ["linus-master", "for-next"]
+
 # KPD Optional: Email notifications. Set kpd_smtp_host in secrets.enc to enable.
 # kpd_smtp_port: 465
 # kpd_smtp_tls: true

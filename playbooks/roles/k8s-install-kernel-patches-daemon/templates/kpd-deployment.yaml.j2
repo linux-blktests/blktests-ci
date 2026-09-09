@@ -7,19 +7,32 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kernel-patches-daemon
+  name: kpd-{{ instance.name }}
   namespace: kernel-patches-daemon
+  labels:
+    app: kpd
+    kpd-instance: "{{ instance.name }}"
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app: kernel-patches-daemon
+      app: kpd
+      kpd-instance: "{{ instance.name }}"
   template:
     metadata:
+      annotations:
+        # The Secret and the ConfigMap keep the same names across a redeploy, so
+        # without this the pod spec is unchanged and the old pod keeps running
+        # with the previous kpd.json and wrapper script. Changing an instance's
+        # lock_file or active flag would then not take effect until something
+        # else happened to restart the pod, which is exactly how two clusters
+        # end up disagreeing about who holds a lock.
+        checksum/config: "{{ (kpd_config_json ~ kpd_leader_election_script) | hash('sha1') }}"
       labels:
-        app: kernel-patches-daemon
+        app: kpd
+        kpd-instance: "{{ instance.name }}"
     spec:
       containers:
         - name: kpd
@@ -77,10 +90,10 @@ spec:
       volumes:
         - name: kpd-config
           secret:
-            secretName: kpd-config
+            secretName: kpd-{{ instance.name }}-config
         - name: kpd-leader-election
           configMap:
-            name: kpd-leader-election
+            name: kpd-{{ instance.name }}-leader-election
             defaultMode: 493
         - name: repos-tmp
           emptyDir: {}

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# Builds the kpd container image and reads the config files that ship with it.
+# Every instance runs the same image and differs only in its mounted kpd.json,
+# so this is included once per playbook run rather than once per instance.
+
+- name: "Get private docker registry IP"
+  ansible.builtin.set_fact:
+    registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
+
+- name: "Create temp directory for kpd image build"
+  tempfile:
+    state: directory
+  register: kpd_build_dir
+
+- name: "Clone kernel-patches-daemon repository"
+  git:
+    repo: "{{ kpd_image_repo }}"
+    dest: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+    version: "{{ kpd_image_branch }}"
+    depth: 1
+
+- name: "Read labels.json from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/labels.json"
+  register: kpd_labels_json_raw
+
+- name: "Read template_base from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_base"
+  register: kpd_template_base_raw
+
+- name: "Read template_success from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_success"
+  register: kpd_template_success_raw
+
+- name: "Read template_failure from kpd repository"
+  slurp:
+    src: "{{ kpd_build_dir.path }}/kernel-patches-daemon/configs/template_failure"
+  register: kpd_template_failure_raw
+
+- name: "Store kpd config file contents"
+  set_fact:
+    kpd_labels_json: "{{ kpd_labels_json_raw.content | b64decode }}"
+    kpd_template_base: "{{ kpd_template_base_raw.content | b64decode }}"
+    kpd_template_success: "{{ kpd_template_success_raw.content | b64decode }}"
+    kpd_template_failure: "{{ kpd_template_failure_raw.content | b64decode }}"
+
+- name: "Ensure poetry is installed"
+  pip:
+    name: poetry
+    state: present
+
+- name: "Generate poetry.lock if absent"
+  command: poetry lock
+  args:
+    chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+    creates: "{{ kpd_build_dir.path }}/kernel-patches-daemon/poetry.lock"
+
+- name: "Build and push kernel-patches-daemon image to private registry"
+  shell: |
+    docker build \
+      --build-arg http_proxy \
+      --build-arg https_proxy \
+      --build-arg no_proxy \
+      -t {{ registry_ip }}:32000/kernel-patches-daemon:latest .
+    docker push {{ registry_ip }}:32000/kernel-patches-daemon:latest
+  args:
+    chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+
+- name: "Cleanup kpd build directory"
+  file:
+    path: "{{ kpd_build_dir.path }}"
+    state: absent

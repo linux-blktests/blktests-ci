@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -28,16 +29,23 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 # ---------------------------------------------------------------------------
 # Configuration (injected by Ansible / Jinja2)
 # ---------------------------------------------------------------------------
-LOCK_REPO = "{{ kpd_lock_repo }}"
-CLUSTER_NAME = "{{ kpd_cluster_name }}"
-LOCK_TTL = {{ kpd_lock_ttl_seconds }}
-HEARTBEAT_INTERVAL = {{ kpd_heartbeat_interval_seconds }}
+# The values below are emitted through to_json so one containing a quote or a
+# backslash cannot break out of the Python literal. JSON string syntax is a
+# subset of Python's.
+INSTANCE_NAME = {{ instance.name | to_json }}
+LOCK_REPO = {{ kpd_lock_repo | to_json }}
+CLUSTER_NAME = {{ kpd_cluster_name | to_json }}
+LOCK_TTL = {{ kpd_lock_ttl_seconds | int }}
+HEARTBEAT_INTERVAL = {{ kpd_heartbeat_interval_seconds | int }}
 RETRY_INTERVAL = min(60, HEARTBEAT_INTERVAL)
-LOCK_FILE_PATH = "lock.json"
-KPD_ACTIVE = "{{ kpd_active | default('true') }}"
+LOCK_FILE_PATH = {{ instance.lock_file | to_json }}
+# Directory separators stay literal, everything else is escaped, so a path with
+# a space or a "#" in it addresses the file it names instead of quietly 404ing.
+LOCK_FILE_URL_PATH = urllib.parse.quote(LOCK_FILE_PATH, safe="/")
+KPD_ACTIVE = {{ instance.active | default(kpd_active | default('true')) | string | to_json }}
 
-GH_APP_ID = "{{ kpd_github_app_id }}"
-GH_APP_INSTALL_ID = "{{ kpd_github_app_installation_id }}"
+GH_APP_ID = {{ kpd_github_app_id | string | to_json }}
+GH_APP_INSTALL_ID = {{ kpd_github_app_installation_id | string | to_json }}
 GH_APP_KEY_PATH = "/app/configs/github-app-private-key.pem"
 
 GITHUB_API = "https://api.github.com"
@@ -47,7 +55,7 @@ GITHUB_API = "https://api.github.com"
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [leader-election] %(message)s",
+    format=f"%(asctime)s [leader-election {INSTANCE_NAME}] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 logging.Formatter.converter = time.gmtime
@@ -139,7 +147,7 @@ def _github_request(url: str, method: str = "GET", data: dict | None = None):
 
 def read_lock() -> tuple[dict | None, str | None]:
     """Read the current lock file. Returns (lock_content_dict, sha) or (None, None)."""
-    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_PATH}"
+    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_URL_PATH}"
     status, body = _github_request(url)
 
     if status == 404:
@@ -154,19 +162,19 @@ def read_lock() -> tuple[dict | None, str | None]:
 
 def write_lock(holder: str, timestamp: str, sha: str | None) -> str | None:
     """Write the lock file using CAS. Returns new SHA on success, None on conflict."""
-    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_PATH}"
+    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_URL_PATH}"
     content_b64 = base64.b64encode(
         json.dumps({"holder": holder, "timestamp": timestamp}).encode()
     ).decode()
 
     payload: dict = {
-        "message": f"kpd lock update by {holder}",
+        "message": f"{LOCK_FILE_PATH}: kpd lock update by {holder}",
         "content": content_b64,
     }
     if sha:
         payload["sha"] = sha
     else:
-        payload["message"] = f"kpd lock created by {holder}"
+        payload["message"] = f"{LOCK_FILE_PATH}: kpd lock created by {holder}"
 
     status, body = _github_request(url, method="PUT", data=payload)
     if status in (200, 201):
@@ -187,8 +195,11 @@ def delete_lock_file():
     if content.get("holder") != CLUSTER_NAME:
         return
 
-    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_PATH}"
-    payload = {"message": f"kpd lock released by {CLUSTER_NAME}", "sha": sha}
+    url = f"{GITHUB_API}/repos/{LOCK_REPO}/contents/{LOCK_FILE_URL_PATH}"
+    payload = {
+        "message": f"{LOCK_FILE_PATH}: kpd lock released by {CLUSTER_NAME}",
+        "sha": sha,
+    }
     try:
         _github_request(url, method="DELETE", data=payload)
         log.info("Lock released")
@@ -340,8 +351,8 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown_handler)
     signal.signal(signal.SIGINT, _shutdown_handler)
 
-    log.info("Cluster: %s", CLUSTER_NAME)
-    log.info("Lock repo: %s", LOCK_REPO)
+    log.info("Instance: %s | Cluster: %s", INSTANCE_NAME, CLUSTER_NAME)
+    log.info("Lock file: %s/%s", LOCK_REPO, LOCK_FILE_PATH)
     log.info("Lock TTL: %ds | Heartbeat: %ds", LOCK_TTL, HEARTBEAT_INTERVAL)
     log.info("Manual override (kpd_active): %s", KPD_ACTIVE)
 

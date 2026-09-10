@@ -305,8 +305,8 @@ kpd is deployed automatically when `kpd_github_app_id` is defined in
    cluster (e.g. `cluster-west`, `cluster-east`). This identifies the cluster in
    the leader-election lock.
 
-5. **Set SMTP credentials** (optional) in `secrets.enc` via
-   `ansible-vault edit secrets.enc` for kpd email notifications.
+5. **Enable email notifications** (optional), see
+   [Email notifications](#email-notifications).
 
 #### Cross-cluster leader election
 
@@ -381,6 +381,47 @@ kubectl logs -n kernel-patches-daemon -l kpd-instance=linux-block -f
 ```
 The wrapper logs its instance name, lock file and lock decisions on startup, so
 the first lines of a pod's log say whether it went active or standby and why.
+
+#### Email notifications
+
+kpd mails a report when a pull request switches between passing and failing.
+It is off until `kpd_smtp_host` is set, and it is configured per instance, so
+each mailing list reports to the people who look after it.
+
+Everything lives in `secrets.enc`, because `variables.yaml` is committed to a
+public repository and recipient addresses do not belong there. Add the relay
+plus one entry per instance, keyed by its `name` in `kpd_instances`. An instance
+with no entry sends no mail at all:
+
+```yaml
+kpd_smtp_host: "mailrelay.example.com"
+kpd_smtp_instances:
+  linux-nvme:
+    from: "maintainer@example.com"
+    to: ["maintainer@example.com"]
+    cc: ["someone-else@example.com"]
+```
+
+Optional per entry: `submitter_allowlist` (regexes; matching patch submitters
+are added to `to`), `ignore_allowlist` (mail *every* submitter, which reaches
+people outside your organisation), and `report_success` (mail on pass as well
+as fail, off by default).
+
+Optional and deployment-wide: `kpd_smtp_tls` (default true, use `false` for a
+plain relay), `kpd_smtp_user` and `kpd_smtp_pass` for an authenticating relay,
+and `kpd_smtp_http_proxy`.
+
+**There is no port setting.** kpd sends by invoking `curl` against
+`smtp://<host>` or `smtps://<host>` and never appends a port, so a `port` key
+is parsed and then ignored. Put a non-default port in `kpd_smtp_host` as
+`host:port`.
+
+**The image has to provide `curl`.** kpd sends by exec'ing it, since it is the
+only client that speaks SMTP through an HTTP proxy, so `kpd_image_branch` must
+point at a branch whose Dockerfile installs it. Without it the send raises an
+uncaught `FileNotFoundError` that aborts the sync cycle, and because the
+pass/fail label is applied *before* the mail is attempted, the next cycle sees
+the label and never retries: the notification is lost rather than delayed.
 
 #### Manual override
 

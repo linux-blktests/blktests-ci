@@ -13,6 +13,10 @@ added without the surrounding punctuation changing.
 log_extractor is pinned rather than configurable: every instance deployed from
 here is tested by the blktests CI, which emits the same job log markers whatever
 mailing list the series came from.
+
+No "port" is emitted. kpd builds a curl command against smtp://<host> or
+smtps://<host> and never appends the port, so the key is parsed and ignored.
+Put a non-default port in kpd_smtp_host instead, as host:port.
 -#}
 {%- set config = {
       "version": 3,
@@ -50,20 +54,22 @@ mailing list the series came from.
       })
 -%}
 {%- endfor -%}
-{%- if kpd_smtp_host is defined -%}
+{%- set smtp = kpd_smtp_instances | default({}) -%}
+{%- if kpd_smtp_host is defined and instance.name in smtp -%}
+{%-   set mail = smtp[instance.name] -%}
 {%-   set _ = config.update({
         "email": {
           "host": kpd_smtp_host,
-          "port": kpd_smtp_port | default(465),
-          "from": kpd_smtp_from,
+          "from": mail['from'],
           "user": kpd_smtp_user | default(none),
           "pass": kpd_smtp_pass | default(none),
-          "to": kpd_smtp_to | default([]),
-          "cc": kpd_smtp_cc | default([]),
+          "to": mail.to | default([]),
+          "cc": mail.cc | default([]),
           "use_tls": kpd_smtp_tls | default(true),
           "http_proxy": kpd_smtp_http_proxy | default(none),
-          "submitter_allowlist": kpd_smtp_submitter_allowlist | default([]),
-          "ignore_allowlist": kpd_smtp_ignore_allowlist | default(false),
+          "submitter_allowlist": mail.submitter_allowlist | default([]),
+          "ignore_allowlist": mail.ignore_allowlist | default(false),
+          "report_success": mail.report_success | default(false),
           "template_base": "/app/configs/template_base",
           "template_merge_conflict": none,
           "template_success": "/app/configs/template_success",

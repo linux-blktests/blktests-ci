@@ -122,14 +122,10 @@ kpd_instances:
       stable: []
       __DEFAULT__: ["nvme-7.3"]
 
-# KPD Optional: Email notifications. Set kpd_smtp_host in secrets.enc to enable.
-# kpd_smtp_port: 465
+# KPD Optional: Email notifications, see the README. The relay and the
+# per-instance senders and recipients all live in secrets.enc.
 # kpd_smtp_tls: true
-# kpd_smtp_to: []
-# kpd_smtp_cc: []
 # kpd_smtp_http_proxy: null
-# kpd_smtp_submitter_allowlist: []
-# kpd_smtp_ignore_allowlist: false
 
 #The following vars are defined in `secrets.enc`:
 #longhorn_ui_auth_user
@@ -140,6 +136,24 @@ kpd_instances:
 #kpd_patchwork_api_username      (optional, enables kpd deployment)
 #kpd_patchwork_api_token         (optional, enables kpd deployment)
 #kpd_smtp_host                   (optional, enables kpd email notifications)
-#kpd_smtp_from                   (optional, required when kpd_smtp_host is set)
+#kpd_smtp_instances              (optional, per-instance senders/recipients)
 #kpd_smtp_user                   (optional, SMTP auth username)
 #kpd_smtp_pass                   (optional, SMTP auth password)
+#
+#E-mail stays off until kpd_smtp_host is set, and is then sent only for the
+#kpd_instances named in kpd_smtp_instances, keyed by their `name`. Set
+#kpd_smtp_tls to false for a plain relay, since the default is true and would
+#try smtps://. There is no port setting, because kpd never appends one to the
+#host, so use host:port when it is not the default. Optional per entry:
+#submitter_allowlist (regexes, matching patch submitters are added to `to`),
+#ignore_allowlist (mail every submitter, including people outside your
+#organisation) and report_success (mail on pass too, off by default).
+#
+#  kpd_smtp_host: "mailrelay.example.com"
+#  kpd_smtp_tls: false
+#  kpd_smtp_instances:
+#    linux-block: &kpd_mail
+#      from: "maintainer@example.com"
+#      to: ["maintainer@example.com"]
+#      cc: ["colleague@example.com"]
+#    linux-nvme: *kpd_mail

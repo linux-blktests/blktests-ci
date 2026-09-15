@@ -7,6 +7,7 @@
 
 set -e
 set -x
+set -o pipefail
 dockerd --host=unix:///var/run/docker.sock --group=123 &
 echo "Waiting for dockerd to be ready..."
 until docker info >/dev/null 2>&1; do
@@ -26,7 +27,12 @@ docker build \
   -t linux-kernel-containerdisk \
   -f Dockerfile.linux-kernel-containerdisk . 2>&1 | tee build.log
 #Setting KERNEL_VERSION var which is latern needed for notifying the VM what kernel to pick up
-export $(cat build.log | grep KERNEL_VERSION | awk '{print $3}' | grep KERNEL_VERSION | xargs)
+kernel_version_kv=$(cat build.log | grep KERNEL_VERSION | awk '{print $3}' | grep KERNEL_VERSION | xargs) || true
+if [ -z "$kernel_version_kv" ]; then
+  echo "error: no KERNEL_VERSION found in build.log" >&2
+  exit 1
+fi
+export $kernel_version_kv
 echo $KERNEL_VERSION
 docker tag linux-kernel-containerdisk registry-service.docker-registry.svc.cluster.local/linux-kernel-containerdisk:${KERNEL_VERSION}
 docker push registry-service.docker-registry.svc.cluster.local/linux-kernel-containerdisk:${KERNEL_VERSION}

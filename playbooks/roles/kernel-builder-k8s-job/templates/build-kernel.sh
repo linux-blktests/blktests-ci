@@ -149,7 +149,7 @@ make -j$(nproc) LOCALVERSION=
 
 mkdir -p /tmp/initramfs
 cd /tmp/initramfs
-gzip -dc /base-initramfs.cpio.gz | cpio -id
+lsinitrd --unpack /base-initramfs.cpio.gz
 #Replace kernel modules
 rm -rf lib/modules/*
 cd /linux

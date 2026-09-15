@@ -8,26 +8,31 @@
 set -e
 set -x
 
-IMAGE="/base-fedora-cloud-img.qcow2"
+# The containerDisk holds its disk under /disk with a name that depends on the
+# distro and variant it was built for, so pick up whatever is in there instead
+# of hardcoding a file name.
+IMAGE=$(find /base-disk -maxdepth 1 -type f | head -n1)
+if [ -z "$IMAGE" ]; then
+  echo "error: no disk image found in /base-disk" >&2
+  exit 1
+fi
 
 export LIBGUESTFS_BACKEND=direct
 
-FILES=$(guestfish --ro -a "$IMAGE" <<EOF
-run
-mount /dev/sda3 /
-ls /
-EOF
-)
+FILES=$(guestfish --ro -a "$IMAGE" -i ls /boot)
 
-CONFIG_FILE=$(echo "$FILES" | grep 'config-' | xargs)
-INITRAMFS_FILE=$(echo "$FILES" | grep 'initramfs-' | xargs)
+CONFIG_FILE=$(echo "$FILES" | grep '^config-' | head -n1)
+INITRAMFS_FILE=$(echo "$FILES" | grep '^initramfs-' | head -n1)
 
-guestfish --ro -a "$IMAGE" <<EOF
-run
-mount /dev/sda3 /
-copy-out /${CONFIG_FILE} /
-copy-out /${INITRAMFS_FILE} /
+if [ -z "$CONFIG_FILE" ] || [ -z "$INITRAMFS_FILE" ]; then
+  echo "error: no kernel config and initramfs found in /boot of ${IMAGE}" >&2
+  exit 1
+fi
+
+guestfish --ro -a "$IMAGE" -i <<EOF
+copy-out /boot/${CONFIG_FILE} /
+copy-out /boot/${INITRAMFS_FILE} /
 EOF
 
-mv /config-* /base-kernel-config
-mv /initramfs-* /base-initramfs.cpio.gz
+mv "/${CONFIG_FILE}" /base-kernel-config
+mv "/${INITRAMFS_FILE}" /base-initramfs.cpio.gz

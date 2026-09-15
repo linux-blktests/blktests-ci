@@ -53,7 +53,7 @@ RUN chmod 755 get-base-kernel-artifacts.sh
 ARG BUILD_KERNEL_SCRIPT_URL="https://raw.githubusercontent.com/linux-blktests/blktests-ci/refs/heads/main/playbooks/roles/kernel-builder-k8s-job/templates/build-kernel.sh"
 RUN curl -sfL "${BUILD_KERNEL_SCRIPT_URL}" -o ./build-kernel.sh && chmod 755 build-kernel.sh
 
-COPY --from=quay.io/containerdisks/fedora:42 /disk/disk.img /base-fedora-cloud-img.qcow2
+COPY --from=ghcr.io/linux-nvme/blktests-fedora-containerdisk:latest /disk/ /base-disk/
 
 # Extracting kernel config and initramfs from fedora cloud image
 RUN ./get-base-kernel-artifacts.sh
@@ -73,4 +73,4 @@ FROM scratch
 COPY --chown=107:107 --from=0 /output/* /boot/
 #In case a cloud image should be added to the containerdisk it can be done like so:
 #ADD --chown=107:107 https://download.fedoraproject.org/pub/fedora/linux/releases/41/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-41-1.4.x86_64.qcow2 /disk/
-#For now we are using an unmodified fedora:41 cloud image
+#For now we are using a separate linux-nvme/blktests-fedora-containerdisk for the distribution (see vm.yaml.j2)

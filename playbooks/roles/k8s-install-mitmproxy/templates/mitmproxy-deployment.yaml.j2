@@ -41,6 +41,8 @@ spec:
             - "confdir=/ca-certs"
             - "--set"
             - "ssl_verify_upstream_trusted_ca=/ca-certs/upstream-ca-bundle.pem"
+            - "--set"
+            - "stream_large_bodies=1m"
             - "--listen-port"
             - "8080"
           ports:

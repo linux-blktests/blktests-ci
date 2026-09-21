@@ -135,6 +135,11 @@ function run_ssh_cmds() {
   export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
   export kernel_version="${INPUT_KERNEL_VERSION}"
 
+  if [ "${guest_os}" = "freebsd" ] && [ -n "${kernel_version}" ]; then
+    echo "ERROR: kernel_version is not supported for FreeBSD guests (custom kernels are Linux-only); got '${kernel_version}'." >&2
+    return 1
+  fi
+
   mitmproxy_ca_cert_path="${MITMPROXY_CA_CERT_PATH:-/etc/ssl/certs/mitmproxy-ca-cert.pem}"
   if [ -f "$mitmproxy_ca_cert_path" ]; then
     export mitmproxy_ca_cert=$(cat "$mitmproxy_ca_cert_path")
@@ -142,11 +147,43 @@ function run_ssh_cmds() {
 
   resolve_host_devices
 
-  # Render cloud-init script and create a ConfigMap for the VM to consume via
-  # virtiofs (j2 with no data file renders from the exported environment, e.g.
-  # distro, vm_user, kernel_version, mitmproxy_ca_cert)
-  j2 ${TEMPLATES_DIR}/vm-init.sh.j2 -o init.sh
-  kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | kubectl apply -f -
+  # Render the init script and create a ConfigMap for the VM to consume. j2
+  # with no data file renders from the exported environment (e.g. distro,
+  # vm_user, kernel_version, mitmproxy_ca_cert). Linux guests mount the
+  # ConfigMap via virtiofs.
+  if [ "${guest_os}" = "freebsd" ]; then
+    j2 ${TEMPLATES_DIR}/vm-init-freebsd.sh.j2 -o init.sh
+    # FreeBSD has no virtio-fs, so the ConfigMap becomes the NoCloud "cidata"
+    # disk (see vm.yaml.j2) and has to carry user-data and meta-data. nuageinit
+    # unmounts that disk before runcmd runs, so write_files copies the script
+    # out while it is still mounted. bootcmd would be the natural fit, but the
+    # nuageinit in FreeBSD 15.1 silently ignores it.
+    script_b64="$(base64 -w0 init.sh)"
+    cat > user-data << EOF
+#cloud-config
+users:
+  - name: ${vm_user}
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/sh
+    ssh_authorized_keys:
+      - ${vm_ssh_authorized_keys}
+write_files:
+  - path: /root/init.sh
+    permissions: "0755"
+    encoding: base64
+    content: ${script_b64}
+runcmd:
+  - "/bin/sh /root/init.sh"
+EOF
+    printf 'instance-id: %s\nlocal-hostname: %s\n' "${vm_name}" "${vm_name}" > meta-data
+    kubectl create configmap ${vm_name}-cloud-init \
+      --from-file=user-data=user-data \
+      --from-file=meta-data=meta-data \
+      --dry-run=client -o yaml | kubectl apply -f -
+  else
+    j2 ${TEMPLATES_DIR}/vm-init.sh.j2 -o init.sh
+    kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | kubectl apply -f -
+  fi
 
   # Write YAML data file for VM template rendering (host_devices is a JSON
   # array which is valid YAML, so j2 parses it into a native list of dicts)
@@ -160,6 +197,7 @@ distro: "${distro}"
 vm_user: "${vm_user}"
 root_device: "${root_device}"
 root_flags: "${root_flags}"
+guest_os: "${guest_os}"
 EOF
 
   # Render and create VM
@@ -205,6 +243,15 @@ EOF
   done
 
   run_cmds="${INPUT_RUN_CMDS}"
+  # Linux guests export the test devices and the proxy via /etc/environment
+  # (pam_env). FreeBSD has no equivalent, so source the file the guest wrote
+  # them to.
+  # NOTE: blktests is not designed for execution on FreeBSD. The purpose of
+  # this feature is to test integration with applications such as nvme-cli.
+  if [ "${guest_os}" = "freebsd" ]; then
+    run_cmds="set -a; . /etc/ci-devices.env; set +a
+${run_cmds}"
+  fi
   virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
 }
 

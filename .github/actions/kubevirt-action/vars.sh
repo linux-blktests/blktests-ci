@@ -59,6 +59,7 @@ export container_disk_image="${INPUT_CONTAINER_DISK_IMAGE:-}"
 # undecided.
 detect_distro() {
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    *freebsd*) echo freebsd ;;
     *fedora*) echo fedora ;;
     *ubuntu*) echo ubuntu ;;
     *debian*) echo debian ;;
@@ -67,6 +68,13 @@ detect_distro() {
   esac
 }
 export distro="${INPUT_DISTRO:-$(detect_distro "${container_disk_image}")}"
+distro="${distro,,}"
+
+# Guest OS family. FreeBSD guests take a separate provisioning path.
+case "$distro" in
+  freebsd) export guest_os="freebsd" ;;
+  *)       export guest_os="linux" ;;
+esac
 
 # Optional overrides for the root filesystem location the custom kernel boots
 # from (only used when kernel_version is set). Empty means "use the per-distro

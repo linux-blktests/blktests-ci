@@ -88,7 +88,7 @@
       if git clone --depth 1 --branch main https://github.com/linux-blktests/blktests-ci.git "$src"; then
         install -m 0755 "$src/.github/actions/kubevirt-action/entrypoint.sh" /opt/kubevirt-runner/entrypoint.sh
         install -m 0755 "$src/.github/actions/kubevirt-action/vars.sh"       /opt/kubevirt-runner/vars.sh
-        install -m 0644 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm.yaml.j2 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init.sh.j2 /opt/kubevirt-runner/templates/
+        install -m 0644 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm.yaml.j2 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init.sh.j2 "$src"/playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init-freebsd.sh.j2 /opt/kubevirt-runner/templates/
         echo "kubevirt CI logic synced from linux-blktests/blktests-ci@main"
       else
         echo "WARNING: failed to clone linux-blktests/blktests-ci@main; using image-baked logic."

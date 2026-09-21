@@ -1,0 +1,216 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+# FreeBSD counterpart of vm-init.sh.j2. It runs under the base system's
+# /bin/sh before bash is installed, so keep it POSIX sh.
+
+set -eu
+
+# Write /vm-init-failed on failure so the host stops waiting for /vm-ready.
+# POSIX sh has no ERR trap, so check the exit status on EXIT. A non-empty
+# init_failure replaces the generic message.
+init_failure=""
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "${init_failure:-vm-init-freebsd.sh failed with exit ${rc}}" > /vm-init-failed 2>/dev/null; fi; exit "$rc"' EXIT
+
+set -x
+
+# rc(8) leaves /usr/local out of PATH, but that is where pkg installs
+# everything, including helpers its own post-install scripts call.
+PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin
+export PATH
+
+vm_user="{{ vm_user | default('runner', true) }}"
+
+retry() {
+  n=1
+  while :; do
+    if "$@"; then
+      return 0
+    fi
+    if [ "$n" -ge 5 ]; then
+      echo "command still failing after 5 attempts: $*" >&2
+      return 1
+    fi
+    echo "attempt ${n}/5 failed, retrying in 10s: $*" >&2
+    n=$(( n + 1 ))
+    sleep 10
+  done
+}
+
+# entrypoint.sh sources this file before the test commands, as FreeBSD has no
+# /etc/environment. It holds the proxy settings and the test devices.
+: > /etc/ci-devices.env
+
+{% if mitmproxy_ca_cert is defined and mitmproxy_ca_cert %}
+# This script exports the proxy itself. Login shells get it from /etc/profile
+# and the test commands from /etc/ci-devices.env.
+HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+export HTTP_PROXY HTTPS_PROXY NO_PROXY
+http_proxy="$HTTP_PROXY"
+https_proxy="$HTTPS_PROXY"
+no_proxy="$NO_PROXY"
+export http_proxy https_proxy no_proxy
+
+cat > /etc/profile.d-ci-proxy.sh << 'EOF'
+HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+http_proxy="$HTTP_PROXY"
+https_proxy="$HTTPS_PROXY"
+no_proxy="$NO_PROXY"
+export HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy
+EOF
+printf '. /etc/profile.d-ci-proxy.sh\n' >> /etc/profile
+
+cat >> /etc/ci-devices.env << 'EOF'
+HTTP_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+HTTPS_PROXY=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+NO_PROXY=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+http_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+https_proxy=http://mitmproxy.mitmproxy.svc.cluster.local:8080
+no_proxy=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+EOF
+
+# pkg reads pkg_env from pkg.conf, so it gets the proxy even when sudo resets
+# the environment.
+mkdir -p /usr/local/etc
+cat >> /usr/local/etc/pkg.conf << 'EOF'
+pkg_env: {
+  HTTP_PROXY: "http://mitmproxy.mitmproxy.svc.cluster.local:8080",
+  HTTPS_PROXY: "http://mitmproxy.mitmproxy.svc.cluster.local:8080",
+  NO_PROXY: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+}
+EOF
+
+mkdir -p /usr/local/share/certs
+cat > /usr/local/share/certs/mitmproxy-ca-cert.pem << 'CERT'
+{{ mitmproxy_ca_cert }}
+CERT
+certctl rehash
+{% endif %}
+
+# firstboot_pkg_upgrade runs after this script and reboots the VM when it
+# upgraded a package, which lands in the middle of the test run. Disable it
+# and drop any reboot request already queued.
+sysrc firstboot_pkg_upgrade_enable=NO
+rm -f /firstboot-reboot
+
+# nuageinit's sudo: key only writes a sudoers rule and does not install sudo.
+export ASSUME_ALWAYS_YES=yes
+retry pkg update -f
+retry pkg install -y bash sudo jq nvme-cli
+
+# Do not rely on nuageinit's rule, which may predate the sudo install.
+install -d -m 0755 /usr/local/etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$vm_user" > "/usr/local/etc/sudoers.d/90-${vm_user}"
+{% if mitmproxy_ca_cert is defined and mitmproxy_ca_cert %}
+# sudo resets the environment, so keep the proxy for the test commands.
+printf 'Defaults env_keep += "HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy"\n' >> "/usr/local/etc/sudoers.d/90-${vm_user}"
+{% endif %}
+chmod 0440 "/usr/local/etc/sudoers.d/90-${vm_user}"
+visudo -cf "/usr/local/etc/sudoers.d/90-${vm_user}"
+
+nvme_ctrls() {
+  for ctrl in /dev/nvme[0-9]*; do
+    case "$ctrl" in
+      /dev/nvme[0-9]|/dev/nvme[0-9][0-9]) echo "$ctrl" ;;
+    esac
+  done
+}
+
+# The disks are nvd(4) or nda(4), depending on hw.nvme.use_nvd. With nda(4),
+# /dev/nvdN are compat symlinks to the same disks, so skip symlinks.
+nvme_disks() {
+  for dev in /dev/nvd[0-9]* /dev/nda[0-9]*; do
+    case "$dev" in
+      /dev/nvd[0-9]|/dev/nvd[0-9][0-9]|/dev/nda[0-9]|/dev/nda[0-9][0-9]) ;;
+      *) continue ;;
+    esac
+    [ -h "$dev" ] || echo "$dev"
+  done
+}
+
+count() {
+  echo "$#"
+}
+
+ctrls=$(nvme_ctrls)
+
+# Recreate the namespaces as prepare-nvme-devices.sh does, so a job never
+# inherits the namespace layout, LBA format or data of a previous job. Use
+# nvme-cli: `nvmecontrol ns delete` attaches a 2-byte dummy buffer, and mapping
+# it for DMA panics the FreeBSD 15.1 kernel.
+for ctrl in $ctrls; do
+  init_failure="failed to recreate the NVMe namespace on ${ctrl}"
+  nvme delete-ns "$ctrl" -n 0xffffffff
+  nvme format "$ctrl" -n 0xffffffff -l 0 -f
+
+  # A temporary namespace reports the LBA formats. Pick the one with 512-byte
+  # blocks and no metadata.
+  nvme create-ns "$ctrl" -s 1 -c 1 -f 1 -d 0 --csi=0
+  nvme attach-ns "$ctrl" -n 1 -c 0
+  flbas=$(nvme id-ns "$ctrl" -n 1 | grep lbaf | grep ms:0 | grep lbads:9 | grep rp:0 | awk '{print $2}')
+
+  nvme delete-ns "$ctrl" -n 0xffffffff
+  size=$(nvme id-ctrl "$ctrl" --output-format=json | jq -r '{tnvmcap} | .[]' | awk '{print $1/512}')
+  # Create a zoned namespace on ZNS drives, as on Linux. FreeBSD 15.1 cannot
+  # use it, so those drives fail provisioning until FreeBSD supports ZNS.
+  csi=0
+  if nvme effects-log "$ctrl" -c 0x02 --output-format=json | jq -r '.[] | {io_cmd_set}' | grep -iq zone; then
+    csi=2
+  fi
+  nvme create-ns "$ctrl" -s "$size" -c "$size" -f "$flbas" -d 0 --csi="$csi"
+  nvme attach-ns "$ctrl" -n 1 -c 0
+
+  # The kernel keeps a deleted namespace flagged as gone after it is
+  # recreated, so nda(4) never rescans it. Re-attach the driver to enumerate
+  # the controller as at boot. Detach tears down the admin queue before it
+  # waits for the namespace-change task, so let that task finish first.
+  sleep 1
+  devctl disable "${ctrl#/dev/}"
+  devctl enable "${ctrl#/dev/}"
+done
+
+# Wait up to 10s for the disks to come back.
+want=$(count $ctrls)
+for _ in $(seq 1 50); do
+  if [ "$(count $(nvme_disks))" -ge "$want" ]; then
+    break
+  fi
+  sleep 0.2
+done
+if [ "$(count $(nvme_disks))" -lt "$want" ]; then
+  init_failure="NVMe disks missing after re-attaching the controllers"
+  exit 1
+fi
+init_failure=""
+
+ctrl_counter=0
+for ctrl in $ctrls; do
+  echo "NVME_CTRL${ctrl_counter}=${ctrl}" >> /etc/ci-devices.env
+  ctrl_counter=$(( ctrl_counter + 1 ))
+done
+
+ns_counter=0
+for ns in /dev/nvme[0-9]*ns[0-9]*; do
+  [ -c "$ns" ] || continue
+  echo "NVME_NS${ns_counter}=${ns}" >> /etc/ci-devices.env
+  ns_counter=$(( ns_counter + 1 ))
+done
+
+# Same BDEV<N> naming as the Linux guest.
+bdev_counter=0
+for dev in $(nvme_disks); do
+  echo "BDEV${bdev_counter}=${dev}" >> /etc/ci-devices.env
+  bdev_counter=$(( bdev_counter + 1 ))
+done
+
+nvmecontrol devlist || true
+
+touch /vm-ready

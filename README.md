@@ -31,6 +31,8 @@ storage-related kernel contribution is proposed, on real hardware.
   - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
   - [Use the private container registry](#use-the-private-container-registry)
   - [The test VM container disk](#the-test-vm-container-disk)
+  - [FreeBSD test VMs](#freebsd-test-vms)
+    - [The FreeBSD container disk](#the-freebsd-container-disk)
   - [Download a VM image](#download-a-vm-image)
   - [Add PCIe passthrough devices](#add-pcie-passthrough-devices)
   - [Access the Rook Ceph dashboard](#access-the-rook-ceph-dashboard)
@@ -876,6 +878,104 @@ EOF
 
 Manage the `kubevirt-runner` and `blktests` package bundles in
 [linux-nvme/ci-containers](https://github.com/linux-nvme/ci-containers).
+
+### FreeBSD test VMs
+
+FreeBSD guests are supported for running tests (primarily `nvme-cli`) against
+the passed-through NVMe devices. Select them with the `distro` input (GitHub) or
+`KUBEVIRT_DISTRO` (GitLab), or implicitly by pointing `container_disk_image` /
+`KUBEVIRT_CONTAINER_DISK_IMAGE` at an image whose reference contains `freebsd`:
+
+```yaml
+nvme-cli-freebsd:
+  extends: .kubevirt
+  tags: [kubevirt, nvme-wdc-sn640]
+  variables:
+    KUBEVIRT_DISTRO: "freebsd"
+    KUBEVIRT_HOST_DEVICES: "nvme-wdc-sn640"
+    KUBEVIRT_RUN_CMDS: |
+      nvmecontrol devlist
+      sudo nvme id-ctrl /dev/nvme0
+```
+
+The equivalent for the composite action:
+
+```yaml
+- uses: linux-blktests/blktests-ci/.github/actions/kubevirt-action@main
+  with:
+    distro: freebsd
+    host_devices: nvme-wdc-sn640
+    run_cmds: |
+      nvmecontrol devlist
+      sudo nvme id-ctrl /dev/nvme0
+```
+
+**Custom kernels are not supported for FreeBSD.** The kernel-builder path builds
+Linux, and KubeVirt's `kernelBoot` injects that kernel into the domain. Passing
+`kernel_version` / `KUBEVIRT_KERNEL_VERSION` for a FreeBSD guest fails the job
+instead of quietly booting the image's own kernel, so results are never reported
+for a kernel nobody asked for. FreeBSD VMs always boot the kernel that ships in
+the container disk.
+
+Guest provisioning differs from the Linux path in three ways that are worth
+knowing when debugging a job:
+
+- **No virtio-fs.** FreeBSD has no virtio-fs driver (`sys/dev/virtio` provides
+  p9fs, not fs), so the init script cannot be delivered through a ConfigMap
+  mount the way `vm-init.sh.j2` is. `vm-init-freebsd.sh.j2` is rendered
+  host-side and embedded base64-encoded in the NoCloud user-data, where
+  [`nuageinit(7)`](https://man.freebsd.org/cgi/man.cgi?query=nuageinit&sektion=7)'s
+  `write_files` unpacks it and `runcmd` starts it.
+  The VM still gets one virtiofs share, `memfd-anchor`, which the guest never
+  mounts. KubeVirt backs guest RAM with a shared memfd only when a VMI has a
+  virtiofs share, as the Linux VMs do. Without one the RAM is anonymous memory
+  that QEMU marks for transparent huge pages, and pinning it for the
+  passed-through NVMe devices compacts host memory synchronously. On fragmented
+  nodes this delayed the domain start past virt-handler's 20 s `SyncVMI`
+  deadline, which left the VMI without an IP or failed the job's wait for
+  `Running`.
+- **nuageinit, not cloud-init.** The `BASIC-CLOUDINIT` images run FreeBSD's own
+  nuageinit, which implements a subset of cloud-config with slightly different
+  keys (`sudo` is a string, not a list). This is why `entrypoint.sh` writes
+  separate user-data for FreeBSD guests. Note that nuageinit implements both
+  `locked` and `lock_passwd` as `pw lock`, which locks the whole account and
+  makes sshd reject the key with *"account is locked"*, so neither is set; the
+  user is created without a usable password anyway.
+- **Namespaces recreated with nvme-cli.** Like `prepare-nvme-devices.sh` on
+  Linux, the guest deletes all namespaces and creates one full-capacity
+  namespace with 512-byte blocks, zoned on ZNS drives. It uses nvme-cli because
+  `nvmecontrol ns delete` attaches a 2-byte dummy buffer to the command, and
+  mapping that buffer for DMA panics the FreeBSD 15.1 kernel. The kernel also
+  keeps a deleted namespace flagged as gone after it is recreated, so the guest
+  then re-attaches the `nvme` driver (`devctl disable` and `devctl enable`) to
+  enumerate the controller as at boot. A drive whose namespace cannot be
+  recreated, or whose disk does not come back, fails provisioning.
+  The discovered devices are written to `/etc/ci-devices.env` in the
+  guest as `NVME_CTRL<N>` (controller nodes), `NVME_NS<N>` (namespace character
+  devices) and `BDEV<N>` (the `nvd(4)`/`nda(4)` disks), and the action sources
+  that file before running your commands, so they are plain environment
+  variables. There is no `ZBD<N>`. On clusters behind mitmproxy the file also
+  carries the proxy variables, and `sudo` keeps them, because FreeBSD has no
+  `/etc/environment`.
+
+> **Do not request ZNS drives for FreeBSD jobs yet.** The guest creates a zoned
+> namespace on them as `prepare-nvme-devices.sh` does, but FreeBSD 15.1 cannot
+> use ZNS namespaces, so provisioning fails. Use conventional parts such as
+> `nvme-wdc-sn640`.
+
+The guest gets `bash`, `sudo`, `jq` and `nvme-cli` from `pkg`. Note that
+`nvme-cli` is the Linux utility and several of its subcommands rely on
+`/sys/class/nvme`, which does not exist on FreeBSD
+([FreeBSD bug 288161](https://bugs.freebsd.org/bugzilla/show_bug.cgi?id=288161));
+`nvmecontrol(8)` from the base system is the native equivalent.
+
+#### The FreeBSD container disk
+
+The VM template defaults to
+[`ghcr.io/linux-nvme/blktests-freebsd-containerdisk`](https://github.com/linux-nvme/ci-containers/pkgs/container/blktests-freebsd-containerdisk),
+which [linux-nvme/ci-containers](https://github.com/linux-nvme/ci-containers)
+builds from the official FreeBSD `BASIC-CLOUDINIT` UFS VM image. The FreeBSD
+release and the image checksum are pinned in `ci-containers.yaml` there.
 
 ### Download a VM image
 

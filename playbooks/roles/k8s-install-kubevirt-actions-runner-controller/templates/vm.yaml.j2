@@ -13,6 +13,8 @@
 {% set d = distro_defaults.get(distro | default('fedora', true), distro_defaults['fedora']) %}
 {% set root_device = root_device | default(d.root_device, true) %}
 {% set root_flags  = root_flags  | default(d.root_flags,  true) %}
+{# FreeBSD has no virtiofs guest driver, so init.sh is attached as an ISO disk. #}
+{% set freebsd = (distro | default('fedora', true)) == 'freebsd' %}
 apiVersion: kubevirt.io/v1
 kind: VirtualMachine
 metadata:
@@ -49,11 +51,13 @@ spec:
             kernelArgs: "loglevel=7 no_timer_check console=tty1 console=ttyS0,115200n8 systemd=off root={{ root_device }}{% if root_flags %} rootflags={{ root_flags }}{% endif %}"
 {% endif %}
         devices:
+{% if not freebsd %}
           filesystems:
             - name: prepare-nvme-devices
               virtiofs: {}
             - name: vm-init
               virtiofs: {}
+{% endif %}
           disks:
             - name: containerdisk
               disk:
@@ -61,6 +65,11 @@ spec:
             - name: cloudinitdisk
               disk:
                 bus: virtio
+{% if freebsd %}
+            - name: vm-init
+              disk:
+                bus: virtio
+{% endif %}
 {% if kernel_version is defined and kernel_version %}
             - name: kernel-modules
               cdrom:
@@ -96,9 +105,11 @@ spec:
             path: /boot/kernel-modules.isofs
             imagePullPolicy: Always
 {% endif %}
+{% if not freebsd %}
         - name: prepare-nvme-devices
           configMap:
             name: prepare-nvme-devices
+{% endif %}
         - name: vm-init
           configMap:
             name: {{ vm_name }}-cloud-init
@@ -110,10 +121,17 @@ spec:
                 - name: {{ vm_user | default('runner', true) }}
                   sudo: ["ALL=(ALL) NOPASSWD:ALL"]
                   lock_passwd: true
-                  shell: /bin/bash
+                  shell: {{ '/bin/sh' if freebsd else '/bin/bash' }}
                   ssh_authorized_keys:
                     - {{ vm_ssh_authorized_keys }}
               runcmd:
                 - "mkdir -p /mnt/vm-init"
+{% if freebsd %}
+                # KubeVirt labels ConfigMap ISOs "cfgdata"; scan the virtio disks
+                # as a fallback in case the GEOM label is not present.
+                - "for dev in /dev/iso9660/cfgdata /dev/vtbd*; do mount -t cd9660 -o ro \"$dev\" /mnt/vm-init 2>/dev/null || continue; [ -f /mnt/vm-init/init.sh ] && break; umount /mnt/vm-init; done"
+                - "sh /mnt/vm-init/init.sh"
+{% else %}
                 - "mount -t virtiofs vm-init /mnt/vm-init"
                 - "bash /mnt/vm-init/init.sh"
+{% endif %}

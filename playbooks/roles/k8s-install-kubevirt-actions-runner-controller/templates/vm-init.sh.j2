@@ -1,3 +1,83 @@
+{% if (distro | default('fedora', true)) == 'freebsd' %}
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 SUSE LLC
+#
+# Authors: Daniel Wagner <dwagner@suse.de>
+#
+# FreeBSD provisioning. The stock BASIC-CLOUDINIT image ships without bash, so
+# this runs under /bin/sh. The Linux-only steps (systemd, kernel modules,
+# prepare-nvme-devices.sh) have no FreeBSD counterpart and are left out.
+
+set -ex
+
+# sh has no ERR trap; report any non-zero exit so the host side fails fast.
+trap 'rc=$?; if [ "${rc}" -ne 0 ]; then echo "init.sh failed (exit ${rc})" > /vm-init-failed 2>/dev/null || true; fi' EXIT
+
+retry() {
+  n=1
+  until "$@"; do
+    if [ "${n}" -ge 5 ]; then
+      echo "command still failing after 5 attempts: $*" >&2
+      return 1
+    fi
+    echo "attempt ${n}/5 failed, retrying in 10s: $*" >&2
+    n=$(( n + 1 ))
+    sleep 10
+  done
+}
+
+vm_user="{{ vm_user | default('runner', true) }}"
+
+{% if mitmproxy_ca_cert is defined and mitmproxy_ca_cert %}
+proxy="http://mitmproxy.mitmproxy.svc.cluster.local:8080"
+no_proxy_list="10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local"
+export HTTP_PROXY="${proxy}" HTTPS_PROXY="${proxy}" NO_PROXY="${no_proxy_list}"
+export http_proxy="${proxy}" https_proxy="${proxy}" no_proxy="${no_proxy_list}"
+
+# SSH sessions (run_cmds) do not read a profile, so hand the proxy over via
+# sshd. Only the first SetEnv line counts, hence everything on one line.
+printf 'SetEnv HTTP_PROXY=%s HTTPS_PROXY=%s NO_PROXY=%s http_proxy=%s https_proxy=%s no_proxy=%s\n' \
+  "${proxy}" "${proxy}" "${no_proxy_list}" "${proxy}" "${proxy}" "${no_proxy_list}" >> /etc/ssh/sshd_config
+service sshd reload
+
+# sudo resets the environment, so pkg also gets the proxy from pkg.conf.
+install -d -m 0755 /usr/local/etc
+cat >> /usr/local/etc/pkg.conf << EOF
+PKG_ENV {
+  http_proxy: "${proxy}",
+  https_proxy: "${proxy}",
+  no_proxy: "${no_proxy_list}",
+}
+EOF
+
+install -d -m 0755 /usr/local/share/certs
+cat > /usr/local/share/certs/mitmproxy-ca-cert.pem << 'CERT'
+{{ mitmproxy_ca_cert }}
+CERT
+certctl rehash
+{% endif %}
+
+export ASSUME_ALWAYS_YES=yes
+pkg -N >/dev/null 2>&1 || retry pkg bootstrap -f
+
+missing_pkgs=""
+for pkg in sudo bash jq sg3_utils; do
+  pkg info -e "$pkg" || missing_pkgs="${missing_pkgs} ${pkg}"
+done
+if [ -n "${missing_pkgs}" ]; then
+  # shellcheck disable=SC2086
+  retry pkg install -y ${missing_pkgs}
+fi
+
+install -d -m 0755 /usr/local/etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$vm_user" > "/usr/local/etc/sudoers.d/90-${vm_user}"
+chmod 0440 "/usr/local/etc/sudoers.d/90-${vm_user}"
+visudo -cf "/usr/local/etc/sudoers.d/90-${vm_user}"
+
+touch /vm-ready
+{% else %}
 #!/bin/bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 #
@@ -191,3 +271,4 @@ chmod +x /prepare-nvme-devices.sh
 /prepare-nvme-devices.sh
 
 touch /vm-ready
+{% endif %}

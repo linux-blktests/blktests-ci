@@ -27,7 +27,7 @@ inputs:
     required: false
     default: ""
   distro:
-    description: "Base image distro family: fedora, ubuntu, debian or opensuse. Selects the package manager and CA-trust layout used to provision the VM. If omitted, it is inferred from container_disk_image."
+    description: "Base image distro family: fedora, ubuntu, debian, opensuse or freebsd. Selects the package manager and CA-trust layout used to provision the VM. If omitted, it is inferred from container_disk_image."
     required: false
     default: ""
   root_device:

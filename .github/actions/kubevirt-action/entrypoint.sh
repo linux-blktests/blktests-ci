@@ -134,6 +134,10 @@ function run_ssh_cmds() {
   fi
   export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
   export kernel_version="${INPUT_KERNEL_VERSION}"
+  if [ "${distro}" = "freebsd" ] && [ -n "${kernel_version}" ]; then
+    echo "ERROR: kernel_version boots a custom Linux kernel and cannot be used with distro=freebsd." >&2
+    return 1
+  fi
 
   mitmproxy_ca_cert_path="${MITMPROXY_CA_CERT_PATH:-/etc/ssl/certs/mitmproxy-ca-cert.pem}"
   if [ -f "$mitmproxy_ca_cert_path" ]; then

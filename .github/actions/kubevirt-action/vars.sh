@@ -63,6 +63,7 @@ detect_distro() {
     *ubuntu*) echo ubuntu ;;
     *debian*) echo debian ;;
     *opensuse*|*suse*|*tumbleweed*|*leap*|*microos*) echo opensuse ;;
+    *freebsd*) echo freebsd ;;
     *) echo fedora ;;
   esac
 }

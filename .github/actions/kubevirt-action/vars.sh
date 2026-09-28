@@ -76,6 +76,21 @@ case "$distro" in
   *)       export guest_os="linux" ;;
 esac
 
+# Target architecture for the VM. Auto-detected from the runner host architecture
+# (mapped to Go/K8s arch naming: x86_64 -> amd64, aarch64 -> arm64, ppc64le -> ppc64le),
+# or can be explicitly overridden via INPUT_ARCHITECTURE.
+detect_architecture() {
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64)  echo "amd64" ;;
+    aarch64) echo "arm64" ;;
+    ppc64le) echo "ppc64le" ;;
+    *)       echo "$arch" ;;
+  esac
+}
+export architecture="${INPUT_ARCHITECTURE:-$(detect_architecture)}"
+
 # Optional overrides for the root filesystem location the custom kernel boots
 # from (only used when kernel_version is set). Empty means "use the per-distro
 # default baked into the VM template".

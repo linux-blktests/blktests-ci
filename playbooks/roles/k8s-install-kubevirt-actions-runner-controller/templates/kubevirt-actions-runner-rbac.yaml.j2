@@ -23,7 +23,7 @@ rules:
     resources: ["virtualmachineinstances"]
     verbs: ["get", "watch", "list", "create", "delete"]
   - apiGroups: ["subresources.kubevirt.io"]
-    resources: ["virtualmachineinstances/portforward", "virtualmachineinstances/console"]
+    resources: ["virtualmachineinstances/portforward", "virtualmachineinstances/console", "virtualmachineinstances/vnc"]
     verbs: ["get"]
   - apiGroups: [""]
     resources: ["events", "pods"]

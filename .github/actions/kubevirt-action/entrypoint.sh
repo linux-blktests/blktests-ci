@@ -189,6 +189,7 @@ EOF
   # array which is valid YAML, so j2 parses it into a native list of dicts)
   cat > vm-data.yaml << EOF
 vm_name: "${vm_name}"
+architecture: "${architecture}"
 kernel_version: "${kernel_version}"
 vm_ssh_authorized_keys: "${vm_ssh_authorized_keys}"
 host_devices: ${host_devices}

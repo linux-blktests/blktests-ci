@@ -38,9 +38,16 @@ spec:
         hooks.kubevirt.io/hookSidecars: '[{"args": ["--version", "v1alpha2"], "configMap": {"name": "disable-hostdev-rom", "key": "onDefineDomain.sh", "hookPath": "/usr/bin/onDefineDomain"}}]'
 {% endif %}
     spec:
-      architecture: amd64
+      architecture: {{ architecture | default('amd64', true) }}
       terminationGracePeriodSeconds: 30
       domain:
+{% if architecture | default('amd64', true) == 'ppc64le' %}
+        machine:
+          type: pseries
+        features:
+          acpi:
+            enabled: false
+{% endif %}
 {% if custom_kernel %}
         firmware:
           kernelBoot:
@@ -99,6 +106,9 @@ spec:
 {% endfor %}
 {% endif %}
         cpu:
+{% if architecture | default('amd64', true) == 'ppc64le' %}
+          model: host-passthrough
+{% endif %}
           cores: 4
         resources:
           requests:

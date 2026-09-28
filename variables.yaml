@@ -46,6 +46,8 @@ gitlab_runner_concurrent: 3
 # local registry by the gitlab-runner role. It is referenced through the k3s
 # registry mirror so kubelet can pull it on the cluster nodes.
 kubevirt_runner_image: "container-registry.local:5000/kubevirt-runner:latest"
+# Optional helper image override for non-x86 architectures (e.g. ppc64le, arm64).
+# kubevirt_runner_helper_image: "registry.gitlab.com/gitlab-org/gitlab-runner/gitlab-runner-helper:ppc64le-v19.0.1"
 
 #ci-binary-cache
 # In-cluster HTTP cache that serves version-matched kubectl/virtctl/logcli to

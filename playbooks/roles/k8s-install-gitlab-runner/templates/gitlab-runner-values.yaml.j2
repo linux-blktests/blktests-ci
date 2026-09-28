@@ -83,6 +83,9 @@ runners:
         # Default job image (our kubevirt runner image). Consumers may override
         # it with `image:` in their .gitlab-ci.yml.
         image = "{{ kubevirt_runner_image }}"
+{% if kubevirt_runner_helper_image is defined and kubevirt_runner_helper_image %}
+        helper_image = "{{ kubevirt_runner_helper_image }}"
+{% endif %}
         # Mirror the resource envelope of the GitHub ARC runner pods.
         cpu_request = "4"
         cpu_limit = "4"

@@ -67,6 +67,11 @@ mitmproxy_version: "11.1.3"
 #private_container_registry
 private_container_registry_size: "800Gi"
 
+# Days a linux-kernel-containerdisk is kept before the nightly registry-cleanup
+# CronJob deletes it. Every CI run pushes a new one, so keep this low enough to
+# fit in private_container_registry_size.
+private_container_registry_retention_days: 14
+
 #kernel-patches-daemon (kpd)
 # Optional: kpd is only deployed when kpd_github_app_id is defined in
 # secrets.enc. See the README for the full list of required secret variables.

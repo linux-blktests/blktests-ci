@@ -6,6 +6,14 @@
 
 - include_vars: ../../../../variables.yaml
 
+- name: "Check the registry retention"
+  assert:
+    that:
+      - private_container_registry_retention_days | string is match('^[1-9][0-9]*$')
+    fail_msg: >-
+      private_container_registry_retention_days in variables.yaml must be a
+      whole number of days, at least 1.
+
 - name: "Create docker-registry namespace"
   kubernetes.core.k8s:
     state: present
@@ -131,7 +139,7 @@
     state: present
     template: ../templates/docker-registry-rbac.yaml
 
-- name: "Deploy cronjob to delete linux-kernel-containerdisks older than 30 days"
+- name: "Deploy cronjob to delete linux-kernel-containerdisks older than {{ private_container_registry_retention_days }} days"
   kubernetes.core.k8s:
     state: present
     definition:
@@ -158,7 +166,7 @@
                       set -e
                       REGISTRY_HOST="registry-service.docker-registry.svc.cluster.local:80"
                       REPOSITORY="linux-kernel-containerdisk"
-                      DAYS=30
+                      DAYS={{ private_container_registry_retention_days }}
                       NOW=$(date +%s)
                       ACCEPT="application/vnd.oci.image.index.v1+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json"
 

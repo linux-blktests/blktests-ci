@@ -68,24 +68,33 @@ kubevirt_cr="$(api_get /apis/kubevirt.io/v1/namespaces/kubevirt/kubevirts/kubevi
 virtctl_want="$(printf '%s' "$kubevirt_cr" | jq -r '.status.observedKubeVirtVersion // empty')"
 logcli_want="$LOGCLI_VERSION"
 
+# Map host architecture for binary downloads
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+  x86_64)  KUBE_ARCH="amd64";   VIRTCTL_ARCH="linux-amd64";   LOGCLI_ARCH="linux-amd64" ;;
+  aarch64) KUBE_ARCH="arm64";   VIRTCTL_ARCH="linux-arm64";   LOGCLI_ARCH="linux-arm64" ;;
+  ppc64le) KUBE_ARCH="ppc64le"; VIRTCTL_ARCH="linux-ppc64le"; LOGCLI_ARCH="" ;;
+  *)       KUBE_ARCH="amd64";   VIRTCTL_ARCH="linux-amd64";   LOGCLI_ARCH="linux-amd64" ;;
+esac
+
 if [ -n "$kubectl_want" ] && { [ ! -f "$CACHE_DIR/kubectl" ] || [ "$(have kubectl)" != "$kubectl_want" ]; }; then
   echo "kubectl: updating to $kubectl_want (cached: $(have kubectl))"
-  install_url "https://dl.k8s.io/release/${kubectl_want}/bin/linux/amd64/kubectl" kubectl
+  install_url "https://dl.k8s.io/release/${kubectl_want}/bin/linux/${KUBE_ARCH}/kubectl" kubectl
 fi
 
 if [ -n "$virtctl_want" ] && { [ ! -f "$CACHE_DIR/virtctl" ] || [ "$(have virtctl)" != "$virtctl_want" ]; }; then
   echo "virtctl: updating to $virtctl_want (cached: $(have virtctl))"
-  install_url "https://github.com/kubevirt/kubevirt/releases/download/${virtctl_want}/virtctl-${virtctl_want}-linux-amd64" virtctl
+  install_url "https://github.com/kubevirt/kubevirt/releases/download/${virtctl_want}/virtctl-${virtctl_want}-${VIRTCTL_ARCH}" virtctl
 fi
 
-if [ -n "$logcli_want" ] && { [ ! -f "$CACHE_DIR/logcli" ] || [ "$(have logcli)" != "$logcli_want" ]; }; then
+if [ -n "$logcli_want" ] && [ -n "$LOGCLI_ARCH" ] && { [ ! -f "$CACHE_DIR/logcli" ] || [ "$(have logcli)" != "$logcli_want" ]; }; then
   echo "logcli: updating to $logcli_want (cached: $(have logcli))"
   tmpd="$(mktemp -d)"
-  curl -fsSL -o "$tmpd/logcli.zip" "https://github.com/grafana/loki/releases/download/${logcli_want}/logcli-linux-amd64.zip"
+  curl -fsSL -o "$tmpd/logcli.zip" "https://github.com/grafana/loki/releases/download/${logcli_want}/logcli-${LOGCLI_ARCH}.zip"
   unzip -o "$tmpd/logcli.zip" -d "$tmpd" >/dev/null
   # Publish onto the cache volume via a same-filesystem atomic rename.
   tmp="$(mktemp "$CACHE_DIR/.dl.XXXXXX")"
-  cat "$tmpd/logcli-linux-amd64" > "$tmp"
+  cat "$tmpd/logcli-${LOGCLI_ARCH}" > "$tmp"
   chmod 0755 "$tmp"
   mv -f "$tmp" "$CACHE_DIR/logcli"
   rm -rf "$tmpd"

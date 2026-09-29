@@ -34,7 +34,12 @@
 - name: "Install Virtctl"
   become: yes
   shell: |
-    wget -O /usr/local/bin/virtctl https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/virtctl-{{ kubevirt_version }}-linux-amd64
+    case "$(uname -m)" in
+      aarch64) _arch="linux-arm64"   ;;
+      ppc64le) _arch="linux-ppc64le" ;;
+      *)       _arch="linux-amd64"   ;;
+    esac
+    wget -O /usr/local/bin/virtctl https://github.com/kubevirt/kubevirt/releases/download/{{ kubevirt_version }}/virtctl-{{ kubevirt_version }}-${_arch}
     chmod 0755 /usr/local/bin/virtctl
 
 - name: "Wait for KubeVirt components to become ready"

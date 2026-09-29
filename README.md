@@ -160,6 +160,98 @@ The `--nonroot-devices` flag is required because Longhorn is later deployed on
 the bare-metal cluster. It sets `device_ownership_from_security_context` in
 containerd (see https://github.com/k3s-io/k3s/issues/11168).
 
+### Install Kubernetes (kind) on ppc64le nodes
+
+[k3s](https://k3s.io) does not publish ppc64le releases. On IBM Power (`ppc64le`)
+nodes, use [kind](https://kind.sigs.k8s.io) with the
+[`quay.io/powercloud/kind-node`](https://quay.io/repository/powercloud/kind-node)
+ppc64le node image instead.
+
+Install `kind` and `kubectl` on the node:
+```
+curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/latest/kind-linux-ppc64le
+chmod +x /usr/local/bin/kind
+
+curl -Lo /usr/local/bin/kubectl "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/ppc64le/kubectl"
+chmod +x /usr/local/bin/kubectl
+```
+
+Create a cluster config (`kind-config.yaml`). Pass `/dev/vfio` and the NVMe
+storage mount into every node that will run KubeVirt VMs with PCIe passthrough:
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: kubevirt-ppc64le
+nodes:
+  - role: control-plane
+    image: quay.io/powercloud/kind-node:v1.33.1
+    extraMounts:
+      - hostPath: /mnt/nvme1
+        containerPath: /mnt/nvme1
+      - hostPath: /dev/vfio
+        containerPath: /dev/vfio
+  - role: worker
+    image: quay.io/powercloud/kind-node:v1.33.1
+    extraMounts:
+      - hostPath: /mnt/nvme1
+        containerPath: /mnt/nvme1
+      - hostPath: /dev/vfio
+        containerPath: /dev/vfio
+  - role: worker
+    image: quay.io/powercloud/kind-node:v1.33.1
+    extraMounts:
+      - hostPath: /mnt/nvme1
+        containerPath: /mnt/nvme1
+      - hostPath: /dev/vfio
+        containerPath: /dev/vfio
+```
+
+Create the cluster:
+```
+kind create cluster --config kind-config.yaml
+```
+
+After creation, set `inotify` limits inside each node container (required for
+KubeVirt) and allow pod-to-pod traffic across nodes:
+```
+for node in $(kind get nodes --name kubevirt-ppc64le); do
+  docker exec "$node" sysctl -w fs.inotify.max_user_instances=8192
+  docker exec "$node" sysctl -w fs.inotify.max_user_watches=1048576
+  docker exec "$node" sysctl -w fs.inotify.max_queued_events=16384
+done
+
+# Allow pod network traffic across kind node containers
+iptables -I FORWARD 1 -s 10.244.0.0/16 -j ACCEPT
+iptables -I FORWARD 2 -d 10.244.0.0/16 -j ACCEPT
+```
+
+Configure each node to trust the in-cluster private registry over HTTP:
+```
+REGISTRY_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' kubevirt-ppc64le-control-plane)
+for node in $(kind get nodes --name kubevirt-ppc64le); do
+  docker exec "$node" mkdir -p /etc/containerd/certs.d/${REGISTRY_IP}:32000
+  docker exec "$node" bash -c "cat > /etc/containerd/certs.d/${REGISTRY_IP}:32000/hosts.toml <<EOF
+server = \"http://${REGISTRY_IP}:32000\"
+[host.\"http://${REGISTRY_IP}:32000\"]
+  capabilities = [\"pull\", \"resolve\", \"push\"]
+  skip_verify = true
+EOF"
+done
+```
+
+Copy the kubeconfig to your workstation:
+```
+kind get kubeconfig --name kubevirt-ppc64le > ~/.kube/config-ppc64le
+```
+
+Set `kubeconfig: ~/.kube/config-ppc64le` in `variables.yaml` and proceed with
+[Install the Kubernetes CI requirements](#install-the-kubernetes-ci-requirements).
+
+> **Note:** Longhorn has no ppc64le container images. Use the `nvme-local`
+> StorageClass (a `kubernetes.io/no-provisioner` hostPath class backed by a
+> local NVMe mount) instead. This is configured automatically by the playbooks
+> when `storage_class: nvme-local` is set in `variables.yaml`.
+
 ### Connect kubectl to your workstation
 
 Copy `/etc/rancher/k3s/k3s.yaml` from one of the cluster nodes to

@@ -32,6 +32,60 @@ template:
       volumeMounts:
         - name: dind-externals
           mountPath: /home/runner/tmpDir
+    - name: dind
+      image: docker:dind
+      args:
+        - dockerd
+        - --host=unix:///var/run/docker.sock
+        - --group=$(DOCKER_GROUP_GID)
+      env:
+        - name: DOCKER_GROUP_GID
+          value: "123"
+{% if mitmproxy_enabled %}
+        - name: HTTP_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: HTTPS_PROXY
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: NO_PROXY
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+        - name: http_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: https_proxy
+          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+        - name: no_proxy
+          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+{% endif %}
+      securityContext:
+        privileged: true
+      restartPolicy: Always
+      startupProbe:
+        exec:
+          command:
+            - docker
+            - info
+        initialDelaySeconds: 0
+        failureThreshold: 24
+        periodSeconds: 5
+      volumeMounts:
+        - name: work
+          mountPath: /home/runner/_work
+        - name: dind-sock
+          mountPath: /var/run
+        - name: dind-externals
+          mountPath: /home/runner/externals
+        - name: docker-daemon-config
+          mountPath: /etc/docker/daemon.json
+          subPath: daemon.json
+{% if mitmproxy_enabled %}
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/mitmproxy-ca-cert.pem
+          subPath: mitmproxy-ca-cert.pem
+          readOnly: true
+        - name: mitmproxy-ca-cert
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          subPath: ca-certificates.crt
+          readOnly: true
+{% endif %}
     containers:
     - name: runner
       image: ghcr.io/actions/actions-runner:latest
@@ -39,6 +93,8 @@ template:
       env:
         - name: DOCKER_HOST
           value: unix:///var/run/docker.sock
+        - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+          value: "120"
 {% if mitmproxy_enabled %}
         - name: HTTP_PROXY
           value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
@@ -77,51 +133,6 @@ template:
         requests:
           cpu: "4.0"
           memory: "8Gi"
-    - name: dind
-      image: docker:dind
-      args:
-        - dockerd
-        - --host=unix:///var/run/docker.sock
-        - --group=$(DOCKER_GROUP_GID)
-      env:
-        - name: DOCKER_GROUP_GID
-          value: "123"
-{% if mitmproxy_enabled %}
-        - name: HTTP_PROXY
-          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-        - name: HTTPS_PROXY
-          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-        - name: NO_PROXY
-          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
-        - name: http_proxy
-          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-        - name: https_proxy
-          value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-        - name: no_proxy
-          value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
-{% endif %}
-      securityContext:
-        privileged: true
-      volumeMounts:
-        - name: work
-          mountPath: /home/runner/_work
-        - name: dind-sock
-          mountPath: /var/run
-        - name: dind-externals
-          mountPath: /home/runner/externals
-        - name: docker-daemon-config
-          mountPath: /etc/docker/daemon.json
-          subPath: daemon.json
-{% if mitmproxy_enabled %}
-        - name: mitmproxy-ca-cert
-          mountPath: /etc/ssl/certs/mitmproxy-ca-cert.pem
-          subPath: mitmproxy-ca-cert.pem
-          readOnly: true
-        - name: mitmproxy-ca-cert
-          mountPath: /etc/ssl/certs/ca-certificates.crt
-          subPath: ca-certificates.crt
-          readOnly: true
-{% endif %}
     volumes:
     - name: work
       emptyDir: {}

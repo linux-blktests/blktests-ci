@@ -111,4 +111,4 @@ jq -n \
 mv -f "$CACHE_DIR/.versions.json.tmp" "$CACHE_DIR/versions.json"
 
 echo "cache ready: $(cat "$CACHE_DIR/versions.json")"
-ls -l "$CACHE_DIR"
+ls -l "$CACHE_DIR" || true

@@ -182,10 +182,13 @@ metadata:
 spec:
   schedule: "{{ ci_bin_cache_schedule }}"
   concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      activeDeadlineSeconds: 1800
+      backoffLimit: 2
       template:
         spec:
           serviceAccountName: ci-bin-cache

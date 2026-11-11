@@ -27,6 +27,7 @@ storage-related kernel contribution is proposed, on real hardware.
 - [Redeploying a new version](#redeploying-a-new-version)
 - [Running staging and prod side by side](#running-staging-and-prod-side-by-side)
 - [Operations and reference](#operations-and-reference)
+  - [Kernel builds](#kernel-builds)
   - [CI binary cache](#ci-binary-cache)
   - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
   - [Use the private container registry](#use-the-private-container-registry)
@@ -307,7 +308,7 @@ docker push <k8s-node-ip>:32000/nginx:latest
 ```
 
 See [Use the private container registry](#use-the-private-container-registry) for
-how to reference these images from Kubernetes manifests and docker-in-docker.
+how to reference these images from Kubernetes workloads and CI Jobs.
 
 ## Optional components
 
@@ -325,17 +326,27 @@ certificate PEM file on the workstation. When this variable is defined, the
 3. Configure proxy environment variables so all CI traffic is routed through
    mitmproxy, which handles upstream TLS verification using the corporate CA.
 
-GitHub Actions workflows that run `docker build` against
-`Dockerfile.linux-kernel-containerdisk` should pass proxy build args so the
-Dockerfile can auto-discover the mitmproxy CA:
+The deployment playbook forwards the proxy build args and, when configured,
+the corporate CA while building `Dockerfile.linux-kernel-builder`. For a manual
+builder image build, pass the proxy args:
 
-```yaml
+```bash
 docker build \
   --build-arg http_proxy \
   --build-arg https_proxy \
   --build-arg no_proxy \
+  -f Dockerfile.linux-kernel-builder \
   ...
 ```
+
+When `corporate_ca_cert_path` is defined, also pass:
+
+```bash
+--build-arg EXTRA_CA_CERT="$(cat "$corporate_ca_cert_path")"
+```
+
+`Dockerfile.linux-kernel-containerdisk` remains available for legacy and manual
+builds.
 
 No SSL verification is disabled anywhere; the mitmproxy CA certificate is
 installed into the trust store of every component that needs it.
@@ -919,6 +930,55 @@ Then open the dashboard at http://localhost:3000/.
 
 Query logs through the Explore view with the Loki data source, or in Drilldown.
 
+### Kernel builds
+
+GitHub runner pods do not run a local container daemon. The
+`kernel-build-action` creates an unprivileged Kubernetes Job in
+`gh-runner-<set>-build`, a namespace enforced with Pod Security `restricted`.
+Its CPU and memory defaults, pod limit and ephemeral-storage request/limit are
+configured by the `kernel_build_*` variables in `variables.yaml`. The current
+ephemeral-storage request is 40Gi, rounded up from a local non-root build of
+`torvalds/linux master` (31G peak `/work` usage); the limit is 80Gi.
+
+The Job mounts `kernel-build-job.sh`, `build-kernel.sh`,
+`get-base-kernel-artifacts.sh` and `registry.sh` from the checked-out
+`blktests-ci` repository at run time. Script changes therefore do not require a
+cluster redeploy.
+
+The action returns both a kernel version and the manifest digest. Pass the
+digest to `kubevirt-action` to pin the VM to the exact image. If omitted,
+`kernel_version` selects the image by tag. A nightly CronJob builds
+`torvalds/linux` `master` as `linus-master`.
+
+```yaml
+- name: Build kernel
+  id: kernel
+  uses: ./blktests-ci/.github/actions/kernel-build-action
+  with:
+    kernel_tree: ${{ env.KERNEL_TREE }}
+    kernel_ref: ${{ env.KERNEL_REF }}
+
+- name: Run in VM
+  uses: ./blktests-ci/.github/actions/kubevirt-action
+  with:
+    kernel_version: ${{ steps.kernel.outputs.kernel_version }}
+    kernel_image_digest: ${{ steps.kernel.outputs.kernel_image_digest }}
+    run_cmds: ./contrib/run_ci https://github.com/linux-blktests/blktests-ci-conditions/raw/main
+```
+
+To migrate a deployment that still builds kernels with DinD, drain CI first
+(all scale sets at `maxRunners: 0`), then:
+
+1. Merge `blktests-ci`.
+2. Merge the six `blktests-kpd-ci` branches.
+3. Cancel runs still queued from before the switch.
+4. Redeploy the kernel builder and every scale set. This restores `maxRunners`
+   and re-enables CI.
+
+If CI cannot be drained, first deploy a revision that adds the build namespace
+and builder image while DinD is still present. Then switch the workflows, and
+finally deploy the DinD removal.
+
 ### Use the private container registry
 
 After configuring the workstation (see
@@ -926,45 +986,9 @@ After configuring the workstation (see
 reference images in Kubernetes deployments through the k3s registry mirror:
 `container-registry.local:5000/nginx:latest`.
 
-In docker-in-docker (dind) deployments, refer to the registry like so:
-`registry-service.docker-registry.svc.cluster.local`. For example, `daemon.json`:
-```
-{
-  "insecure-registries" : ["registry-service.docker-registry.svc.cluster.local"]
-}
-```
-
-```
-kubectl create configmap daemon-config --from-file=daemon.json
-```
-
-```
-cat <<EOF | kubectl apply -f -
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: docker
-  labels:
-    app: docker
-spec:
-  containers:
-  - image: docker:24.0.0-rc.1-dind
-    imagePullPolicy: IfNotPresent
-    name: docker
-    securityContext:
-      privileged: true
-    volumeMounts:
-    - name: daemon-config
-      mountPath: /etc/docker/daemon.json
-      subPath: daemon.json
-  restartPolicy: Always
-  volumes:
-  - name: daemon-config
-    configMap:
-      name: daemon-config
-EOF
-```
+Kernel build Jobs push manifests to the in-cluster registry service at
+`http://registry-service.docker-registry.svc.cluster.local`. Kubelet and
+KubeVirt pull the resulting image through the k3s mirror shown above.
 
 ### The test VM container disk
 
@@ -1257,8 +1281,9 @@ ssh user@vmi/vmname.namespace -i $HOME/.ssh/identity -F $HOME/.ssh/virtctl-proxy
 
 Known limitations and planned improvements:
 
-- Make the VM resources configurable (e.g. through instance types). The
-  kernel-builder scale set is currently limited to 4 CPUs and 8 Gi of memory.
+- Make the VM resources configurable (e.g. through instance types).
+- Measure and tune kernel-build CPU, memory and ephemeral-storage defaults for
+  each cluster through the `kernel_build_*` variables.
 - Make `pciHostDevices` configurable in `variables.yaml` instead of hard-coding
   it in `playbooks/roles/k8s-install-kubevirt/tasks/kubevirt-config.yaml`.
 - Add an Ansible playbook for deploying k3s on the cluster nodes.

@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+name: "Kernel build action"
+description: "Build and publish a kernel containerdisk in an unprivileged Kubernetes Job"
+author: "Dennis Maisenbacher"
+inputs:
+  kernel_tree:
+    description: "Git repository containing the kernel"
+    required: true
+  kernel_ref:
+    description: "Kernel branch, tag, or commit to build"
+    required: true
+  kernel_tag_overwrite:
+    description: "Optional kernel version tag override"
+    required: false
+    default: ""
+
+outputs:
+  kernel_version:
+    description: "Version tag of the built kernel"
+    value: "${{ steps.build.outputs.kernel_version }}"
+  kernel_image_digest:
+    description: "Manifest digest of the pushed kernel containerdisk"
+    value: "${{ steps.build.outputs.kernel_image_digest }}"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install required tools
+      run: ${GITHUB_ACTION_PATH}/../kubevirt-action/entrypoint.sh install_build_requirements
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
+    - id: build
+      name: Build kernel in Kubernetes Job
+      run: ${GITHUB_ACTION_PATH}/entrypoint.sh build
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
+        INPUT_KERNEL_TREE: "${{ inputs.kernel_tree }}"
+        INPUT_KERNEL_REF: "${{ inputs.kernel_ref }}"
+        INPUT_KERNEL_TAG_OVERWRITE: "${{ inputs.kernel_tag_overwrite }}"
+    - name: Clean up kernel build Job
+      if: always()
+      run: ${GITHUB_ACTION_PATH}/entrypoint.sh cleanup
+      shell: bash
+      env:
+        GITHUB_ACTION_PATH: "${{ github.action_path }}"
+        INPUT_JOB_NAME: "${{ steps.build.outputs.job_name }}"

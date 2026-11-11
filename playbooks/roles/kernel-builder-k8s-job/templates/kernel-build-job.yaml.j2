@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: {{ "batch/v1" | tojson }}
+kind: {{ "Job" | tojson }}
+metadata:
+  name: {{ job_name | tojson }}
+  namespace: {{ namespace | tojson }}
+  labels:
+    app.kubernetes.io/name: {{ "kernel-build" | tojson }}
+    app.kubernetes.io/part-of: {{ "blktests-ci" | tojson }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ active_deadline_seconds }}
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: {{ "Never" | tojson }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: {{ "RuntimeDefault" | tojson }}
+      nodeSelector:
+        kubernetes.io/arch: {{ architecture | tojson }}
+      containers:
+        - name: {{ "build" | tojson }}
+          image: {{ builder_image | tojson }}
+          imagePullPolicy: {{ "Always" | tojson }}
+          command:
+            - {{ "/bin/bash" | tojson }}
+            - {{ "/opt/kernel-build/kernel-build-job.sh" | tojson }}
+          env:
+            - name: {{ "KERNEL_TREE" | tojson }}
+              value: {{ kernel_tree | tojson }}
+            - name: {{ "KERNEL_REF" | tojson }}
+              value: {{ kernel_ref | tojson }}
+            - name: {{ "KERNEL_TAG_OVERWRITE" | tojson }}
+              value: {{ kernel_tag_overwrite | tojson }}
+            - name: {{ "KERNEL_BUILD_MEMORY_LIMIT_GIB" | tojson }}
+              valueFrom:
+                resourceFieldRef:
+                  containerName: {{ "build" | tojson }}
+                  resource: {{ "limits.memory" | tojson }}
+                  divisor: {{ "1Gi" | tojson }}
+{% if proxy is defined and proxy %}
+            - name: {{ "HTTP_PROXY" | tojson }}
+              value: {{ proxy.http_proxy | tojson }}
+            - name: {{ "HTTPS_PROXY" | tojson }}
+              value: {{ proxy.https_proxy | tojson }}
+            - name: {{ "NO_PROXY" | tojson }}
+              value: {{ proxy.no_proxy | tojson }}
+            - name: {{ "http_proxy" | tojson }}
+              value: {{ proxy.http_proxy | tojson }}
+            - name: {{ "https_proxy" | tojson }}
+              value: {{ proxy.https_proxy | tojson }}
+            - name: {{ "no_proxy" | tojson }}
+              value: {{ proxy.no_proxy | tojson }}
+            - name: {{ "SSL_CERT_FILE" | tojson }}
+              value: {{ "/etc/ci-ca/ca-certificates.crt" | tojson }}
+            - name: {{ "CURL_CA_BUNDLE" | tojson }}
+              value: {{ "/etc/ci-ca/ca-certificates.crt" | tojson }}
+            - name: {{ "GIT_SSL_CAINFO" | tojson }}
+              value: {{ "/etc/ci-ca/ca-certificates.crt" | tojson }}
+{% endif %}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - {{ "ALL" | tojson }}
+          volumeMounts:
+            - name: {{ "work" | tojson }}
+              mountPath: {{ "/work" | tojson }}
+            - name: {{ "scripts" | tojson }}
+              mountPath: {{ "/opt/kernel-build" | tojson }}
+              readOnly: true
+{% if proxy is defined and proxy %}
+            - name: {{ "mitmproxy-ca-cert" | tojson }}
+              mountPath: {{ "/etc/ci-ca" | tojson }}
+              readOnly: true
+{% endif %}
+      volumes:
+        - name: {{ "work" | tojson }}
+          emptyDir: {}
+        - name: {{ "scripts" | tojson }}
+          configMap:
+            name: {{ (job_name + "-scripts") | tojson }}
+            defaultMode: 365
+{% if proxy is defined and proxy %}
+        - name: {{ "mitmproxy-ca-cert" | tojson }}
+          configMap:
+            name: {{ "mitmproxy-ca-cert" | tojson }}
+            items:
+              - key: {{ "ca-certificates.crt" | tojson }}
+                path: {{ "ca-certificates.crt" | tojson }}
+{% endif %}

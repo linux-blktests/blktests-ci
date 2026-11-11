@@ -22,7 +22,6 @@ RUN apt-get update && \
     apt-get install --yes --quiet=2 \
     ca-certificates \
     curl \
-    file \
     git \
     j2cli \
     jq \
@@ -37,6 +36,7 @@ COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 # kubevirt entrypoint, the vars it sources, and the VM templates it renders.
 COPY .github/actions/kubevirt-action/entrypoint.sh /opt/kubevirt-runner/entrypoint.sh
 COPY .github/actions/kubevirt-action/vars.sh /opt/kubevirt-runner/vars.sh
+COPY .github/actions/kubevirt-action/registry.sh /opt/kubevirt-runner/registry.sh
 COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init.sh.j2 /opt/kubevirt-runner/templates/vm-init.sh.j2
 COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm-init-freebsd.sh.j2 /opt/kubevirt-runner/templates/vm-init-freebsd.sh.j2
 COPY playbooks/roles/k8s-install-kubevirt-actions-runner-controller/templates/vm.yaml.j2 /opt/kubevirt-runner/templates/vm.yaml.j2

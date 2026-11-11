@@ -71,9 +71,9 @@ function ensure_logcli() {
 function install_requirements() {
   # Base tooling is baked into the kubevirt runner image; only install it when
   # missing (e.g. on the GitHub actions-runner image).
-  if ! command -v j2 >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v file >/dev/null 2>&1; then
+  if ! command -v j2 >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
     sudo apt-get update
-    sudo apt-get -y install curl j2cli unzip file
+    sudo apt-get -y install curl j2cli unzip jq
   fi
   ensure_kubectl
   ensure_virtctl
@@ -287,21 +287,11 @@ function extract_kernel_artifacts() {
     mkdir $dir
   fi
 
-  mkdir -p tmp
-  cd tmp
-  # Extracting the /boot directory from the container disk.
-  # This containerdisk only contains this directory, so the image can't
-  # be run as a container for extracting the kernel artifacts.
-  docker pull registry-service.docker-registry.svc.cluster.local/linux-kernel-containerdisk:${kernel_version}
-  docker save registry-service.docker-registry.svc.cluster.local/linux-kernel-containerdisk:${kernel_version} > tmp-containerdisk.tar
-  tar -xf tmp-containerdisk.tar
-  cd blobs/sha256
-  for f in *; do
-    if file -z "$f" | grep -q "POSIX tar archive"; then
-      tar -xf "$f" -C $dir
-    fi
-  done
-  cd ~
+  registry_extract \
+    "${KERNEL_IMAGE_REGISTRY_URL:-http://registry-service.docker-registry.svc.cluster.local}" \
+    linux-kernel-containerdisk \
+    "$kernel_version" \
+    "$dir" boot
 }
 
 function extract_dmesg_logs() {
@@ -321,6 +311,7 @@ function cleanup_vm() {
 
 set -euxo pipefail
 source "$(dirname "$0")/vars.sh"
+source "$(dirname "$0")/registry.sh"
 
 # Directory holding the KubeVirt VM Jinja2 templates. Defaults to the in-repo
 # path used by the GitHub composite action; the kubevirt runner image consumed

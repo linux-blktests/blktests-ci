@@ -200,20 +200,15 @@
         github_token: "{{ github_token | b64encode }}"
   when: use_pat | bool
 
-- name: "Install docker-daemon-config configMap"
+- name: "Remove legacy docker-daemon-config configMap"
   kubernetes.core.k8s:
-    state: present
+    state: absent
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
         name: docker-daemon-config
         namespace: gh-runner-{{ runner_set_name }}
-      data:
-        daemon.json: |
-          {
-            "insecure-registries" : ["registry-service.docker-registry.svc.cluster.local"]
-          }
 
 - name: "Install disable-hostdev-rom onDefineDomain hook ConfigMap"
   kubernetes.core.k8s:
@@ -363,7 +358,7 @@
     state: present
     template: ../templates/kubevirt-actions-runner-rbac.yaml.j2
 
-- name: "Create arc-vm for {{ runner_set_name }}. This runner set is responsible for building the kernel and creating the resulting container images in our local container registry. It also allows to spawn KubeVirt VMs in our cluster"
+- name: "Create arc-vm for {{ runner_set_name }}. Kernels are built in restricted Jobs, and this runner set can spawn KubeVirt VMs."
   kubernetes.core.helm:
     name: "arc-vm-{{ runner_set_name }}"
     namespace: "gh-runner-{{ runner_set_name }}"

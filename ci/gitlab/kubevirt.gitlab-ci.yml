@@ -35,13 +35,6 @@
   image: container-registry.local:5000/kubevirt-runner:latest
   tags:
     - kubevirt
-  # Docker-in-Docker is only used for kernel artifact extraction (docker
-  # pull/save of the kernel containerdisk). The Kubernetes executor runs
-  # services in the same pod, so the daemon is reached over localhost.
-  services:
-    - name: docker:dind
-      alias: docker
-      command: ["--insecure-registry=registry-service.docker-registry.svc.cluster.local"]
   variables:
     # ---- User inputs (set these in the extending job) -------------------
     # Kernel to boot. If left empty, the VM boots the cloud-image's default
@@ -76,9 +69,6 @@
     INPUT_DISTRO: "$KUBEVIRT_DISTRO"
     INPUT_ROOT_DEVICE: "$KUBEVIRT_ROOT_DEVICE"
     INPUT_ROOT_FLAGS: "$KUBEVIRT_ROOT_FLAGS"
-    # Talk to the docker:dind service over plain TCP (shared pod localhost).
-    DOCKER_HOST: "tcp://localhost:2375"
-    DOCKER_TLS_CERTDIR: ""
     # Keep kernel artifacts inside the workspace so they can be uploaded.
     KERNEL_ARTIFACTS_DIR: "$CI_PROJECT_DIR/kernel-artifacts"
   before_script:

@@ -11,9 +11,6 @@
 # runtime from the in-cluster binary cache (ci-tools namespace), which keeps
 # them version-matched to the live cluster. Build context is the repository root.
 
-# Grab a lean static docker CLI from the official image (no daemon).
-FROM docker:cli AS dockercli
-
 FROM docker.io/ubuntu:22.04
 
 RUN apt-get update && \
@@ -28,10 +25,6 @@ RUN apt-get update && \
     sudo \
     unzip && \
     rm -rf /var/lib/apt/lists/*
-
-# Docker CLI talks to the docker:dind service over TCP for kernel artifact
-# extraction (docker pull/save of the kernel containerdisk).
-COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 
 # kubevirt entrypoint, the vars it sources, and the VM templates it renders.
 COPY .github/actions/kubevirt-action/entrypoint.sh /opt/kubevirt-runner/entrypoint.sh

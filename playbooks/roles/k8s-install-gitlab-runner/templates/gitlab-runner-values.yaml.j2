@@ -76,8 +76,8 @@ runners:
 {% endif %}
       [runners.kubernetes]
         namespace = "gl-runner-{{ runner_set_name }}"
-        # Required so the docker:dind service container can run.
-        privileged = true
+        # Job pods do not run a container daemon or build kernel images.
+        privileged = false
         # Job pods run as the KubeVirt-capable service account.
         service_account = "kubevirt-actions-runner"
         # Default job image (our kubevirt runner image). Consumers may override

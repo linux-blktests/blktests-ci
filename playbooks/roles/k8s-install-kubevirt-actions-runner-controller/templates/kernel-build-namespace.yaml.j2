@@ -1,0 +1,92 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gh-runner-{{ runner_set_name }}-build
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: gh-runner-{{ runner_set_name }}-build
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: kernel-build
+  namespace: gh-runner-{{ runner_set_name }}-build
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: "{{ kernel_build_cpu_request }}"
+        memory: "{{ kernel_build_memory_request }}"
+        ephemeral-storage: "{{ kernel_build_ephemeral_storage_request }}"
+      default:
+        memory: "{{ kernel_build_memory_limit }}"
+        ephemeral-storage: "{{ kernel_build_ephemeral_storage_limit }}"
+      max:
+        memory: "{{ kernel_build_memory_limit }}"
+        ephemeral-storage: "{{ kernel_build_ephemeral_storage_limit }}"
+    - type: Pod
+      max:
+        memory: "{{ kernel_build_memory_limit }}"
+        ephemeral-storage: "{{ kernel_build_ephemeral_storage_limit }}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kernel-build
+  namespace: gh-runner-{{ runner_set_name }}-build
+spec:
+  hard:
+    pods: "{{ kernel_build_max_pods }}"
+    count/jobs.batch: "{{ kernel_build_max_pods * 5 }}"
+    count/configmaps: "{{ kernel_build_max_pods * 10 }}"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kernel-build
+  namespace: gh-runner-{{ runner_set_name }}-build
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kernel-build
+  namespace: gh-runner-{{ runner_set_name }}-build
+subjects:
+  - kind: ServiceAccount
+    name: kubevirt-actions-runner
+    namespace: gh-runner-{{ runner_set_name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kernel-build

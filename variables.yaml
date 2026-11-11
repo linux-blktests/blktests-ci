@@ -34,6 +34,18 @@ kubevirt_cri_version: "v1.64.0"
 #gha-runner-scale-set
 gha_rss_version: "0.14.1"
 
+#kernel builds
+# Resource defaults for unprivileged kernel-build Jobs. The 40Gi request rounds
+# a local non-root build of torvalds/linux master (31G peak /work) up to the
+# next 10Gi; the limit is twice the request.
+# MAKE_JOBS defaults to nproc, capped at KERNEL_BUILD_MEMORY_LIMIT_GIB when set.
+kernel_build_cpu_request: "4"
+kernel_build_memory_request: "8Gi"
+kernel_build_memory_limit: "16Gi"
+kernel_build_max_pods: 4
+kernel_build_ephemeral_storage_request: "40Gi"
+kernel_build_ephemeral_storage_limit: "80Gi"
+
 #gitlab-runner
 # Optional: GitLab Runner support, deployed in parallel to the GitHub ARC path
 # via playbooks/setup-gitlab-runner-scale-set.yaml. Nothing here is used unless

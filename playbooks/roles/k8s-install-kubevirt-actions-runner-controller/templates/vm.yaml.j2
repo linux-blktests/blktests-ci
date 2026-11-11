@@ -14,6 +14,7 @@
 {% set d = distro_defaults.get(distro | default('fedora', true), distro_defaults['fedora']) %}
 {% set root_device = root_device | default(d.root_device, true) %}
 {% set root_flags  = root_flags  | default(d.root_flags,  true) %}
+{% set kernel_image = 'container-registry.local:5000/linux-kernel-containerdisk' ~ ('@' ~ kernel_image_digest if kernel_image_digest is defined and kernel_image_digest else ':' ~ kernel_version) %}
 {# Backstop only: entrypoint.sh already rejects kernel_version for FreeBSD. #}
 {% set custom_kernel = guest_os != 'freebsd' and kernel_version is defined and kernel_version %}
 apiVersion: kubevirt.io/v1
@@ -52,7 +53,7 @@ spec:
         firmware:
           kernelBoot:
             container:
-              image: container-registry.local:5000/linux-kernel-containerdisk:{{ kernel_version }}
+              image: {{ kernel_image }}
               initrdPath: /boot/initramfs-{{ kernel_version }}.img
               kernelPath: /boot/vmlinux-{{ kernel_version }}
               imagePullPolicy: Always
@@ -128,7 +129,7 @@ spec:
 {% if custom_kernel %}
         - name: kernel-modules
           containerDisk:
-            image: container-registry.local:5000/linux-kernel-containerdisk:{{ kernel_version }}
+            image: {{ kernel_image }}
             path: /boot/kernel-modules.isofs
             imagePullPolicy: Always
 {% endif %}

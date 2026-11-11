@@ -8,12 +8,57 @@
     name: kubernetes
     state: present
 
-- name: "Ensure the gh-runner-kernel-builder namespace exists"
+- name: "Ensure the restricted gh-runner-kernel-builder namespace exists"
   kubernetes.core.k8s:
-    name: gh-runner-kernel-builder
-    api_version: v1
-    kind: Namespace
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gh-runner-kernel-builder
+        labels:
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/enforce-version: latest
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/audit: restricted
     state: present
+
+- name: "Disable service account token automount for the default account"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: default
+        namespace: gh-runner-kernel-builder
+      automountServiceAccountToken: false
+
+- name: "Set default resource requests and limits for kernel build pods"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: kernel-build
+        namespace: gh-runner-kernel-builder
+      spec:
+        limits:
+          - type: Container
+            defaultRequest:
+              cpu: "{{ kernel_build_cpu_request }}"
+              memory: "{{ kernel_build_memory_request }}"
+              ephemeral-storage: "{{ kernel_build_ephemeral_storage_request }}"
+            default:
+              memory: "{{ kernel_build_memory_limit }}"
+              ephemeral-storage: "{{ kernel_build_ephemeral_storage_limit }}"
+            max:
+              memory: "{{ kernel_build_memory_limit }}"
+              ephemeral-storage: "{{ kernel_build_ephemeral_storage_limit }}"
+          - type: Pod
+            max:
+              memory: "{{ kernel_build_memory_limit }}"
+              ephemeral-storage: "{{ kernel_build_ephemeral_storage_limit }}"
 
 - name: "Check if mitmproxy is deployed in the cluster"
   kubernetes.core.k8s_info:
@@ -43,30 +88,53 @@
     registry_ip: "{{ hostvars[groups['physical_k8s_cluster_nodes'][0]].ansible_host }}"
 
 #This is a dependency for the private container registry
-- name: "Build and push kernel-builder-k8s-job image that is used for the cronjob to build the kernel"
+- name: "Build and push the unprivileged kernel builder image"
   shell: |
-    docker build -t {{ registry_ip }}:32000/kernel-builder-k8s-job -f Dockerfile.kernel-builder-k8s-job .
-    docker push {{ registry_ip }}:32000/kernel-builder-k8s-job:latest
+    set -e
+    if [ -n "$EXTRA_CA_CERT_PATH" ]; then
+      extra_ca_cert=$(cat "$EXTRA_CA_CERT_PATH")
+      set -- --build-arg "EXTRA_CA_CERT=$extra_ca_cert"
+    fi
+    docker build \
+      --build-arg http_proxy \
+      --build-arg https_proxy \
+      --build-arg no_proxy \
+      "$@" \
+      -t {{ registry_ip }}:32000/linux-kernel-builder:latest \
+      -f Dockerfile.linux-kernel-builder .
+    docker push {{ registry_ip }}:32000/linux-kernel-builder:latest
   args:
     chdir: ./roles/kernel-builder-k8s-job/templates/
+  environment:
+    EXTRA_CA_CERT_PATH: "{{ corporate_ca_cert_path | default('') | expanduser }}"
 
-- name: "Install docker-daemon-config configMap"
+- name: "Create kernel-build-scripts ConfigMap"
   kubernetes.core.k8s:
     state: present
     definition:
       apiVersion: v1
       kind: ConfigMap
       metadata:
-        name: docker-daemon-config
+        name: kernel-build-scripts
         namespace: gh-runner-kernel-builder
       data:
-        daemon.json: |
-          {
-            "insecure-registries" : ["registry-service.docker-registry.svc.cluster.local"]
-          }
+        kernel-build-job.sh: "{{ lookup('file', playbook_dir + '/roles/kernel-builder-k8s-job/templates/kernel-build-job.sh') }}"
+        build-kernel.sh: "{{ lookup('file', playbook_dir + '/roles/kernel-builder-k8s-job/templates/build-kernel.sh') }}"
+        get-base-kernel-artifacts.sh: "{{ lookup('file', playbook_dir + '/roles/kernel-builder-k8s-job/templates/get-base-kernel-artifacts.sh') }}"
+        registry.sh: "{{ lookup('file', playbook_dir + '/../.github/actions/kubevirt-action/registry.sh') }}"
 
-- name: "Create the kernel-builder deployment which requires DinD to push the articts into the private docker registry"
+- name: "Create the unprivileged nightly kernel build CronJob"
   kubernetes.core.k8s:
     state: present
     template: ../templates/kernel-builder-cronjob.yaml.j2
+    force: true
 
+- name: "Remove legacy docker-daemon-config ConfigMap"
+  kubernetes.core.k8s:
+    state: absent
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: docker-daemon-config
+        namespace: gh-runner-kernel-builder

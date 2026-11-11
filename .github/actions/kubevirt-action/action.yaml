@@ -12,6 +12,10 @@ inputs:
     description: "Linux kernel version the VM should boot. If omitted, the VM boots the cloud-image's default kernel (no custom kernel or modules are loaded)."
     required: false
     default: ""
+  kernel_image_digest:
+    description: "Digest (sha256:...) of the kernel containerdisk to boot, as returned by kernel-build-action. Pins the VM to that exact image. If omitted, the image tagged kernel_version is used."
+    required: false
+    default: ""
   run_cmds:
     description: "Commands that should be executed within the VM"
     required: true
@@ -64,6 +68,7 @@ runs:
       env:
         GITHUB_ACTION_PATH: "${{ github.action_path }}"
         INPUT_KERNEL_VERSION: "${{ inputs.kernel_version }}"
+        INPUT_KERNEL_IMAGE_DIGEST: "${{ inputs.kernel_image_digest }}"
         INPUT_RUN_CMDS: "${{ inputs.run_cmds }}"
         INPUT_HOST_DEVICES: "${{ inputs.host_devices }}"
         INPUT_CONTAINER_DISK_IMAGE: "${{ inputs.container_disk_image }}"
@@ -112,6 +117,7 @@ runs:
       env:
         GITHUB_ACTION_PATH: "${{ github.action_path }}"
         INPUT_KERNEL_VERSION: "${{ inputs.kernel_version }}"
+        INPUT_KERNEL_IMAGE_DIGEST: "${{ inputs.kernel_image_digest }}"
       if: ${{ always() }}
     - name: Upload kernel artifacts
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 #v7.0.2

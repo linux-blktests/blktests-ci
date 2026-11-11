@@ -134,6 +134,18 @@ function run_ssh_cmds() {
   fi
   export vm_ssh_authorized_keys=$(cat ./identity.pub | xargs)
   export kernel_version="${INPUT_KERNEL_VERSION}"
+  export kernel_image_digest="${INPUT_KERNEL_IMAGE_DIGEST:-}"
+
+  if [[ -n $kernel_image_digest ]]; then
+    [[ -n $kernel_version ]] || {
+      echo "ERROR: kernel_image_digest requires kernel_version." >&2
+      return 1
+    }
+    [[ $kernel_image_digest =~ ^sha256:[0-9a-f]{64}$ ]] || {
+      echo "ERROR: invalid kernel_image_digest '${kernel_image_digest}'." >&2
+      return 1
+    }
+  fi
 
   if [ "${guest_os}" = "freebsd" ] && [ -n "${kernel_version}" ]; then
     echo "ERROR: kernel_version is not supported for FreeBSD guests (custom kernels are Linux-only); got '${kernel_version}'." >&2
@@ -191,6 +203,7 @@ EOF
 vm_name: "${vm_name}"
 architecture: "${architecture}"
 kernel_version: "${kernel_version}"
+kernel_image_digest: "${kernel_image_digest}"
 vm_ssh_authorized_keys: "${vm_ssh_authorized_keys}"
 host_devices: ${host_devices}
 container_disk_image: "${container_disk_image}"
@@ -290,7 +303,7 @@ function extract_kernel_artifacts() {
   registry_extract \
     "${KERNEL_IMAGE_REGISTRY_URL:-http://registry-service.docker-registry.svc.cluster.local}" \
     linux-kernel-containerdisk \
-    "$kernel_version" \
+    "${INPUT_KERNEL_IMAGE_DIGEST:-$kernel_version}" \
     "$dir" boot
 }
 

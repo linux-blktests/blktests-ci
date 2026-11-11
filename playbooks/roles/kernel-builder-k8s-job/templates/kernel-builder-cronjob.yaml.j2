@@ -11,60 +11,88 @@ metadata:
   namespace: gh-runner-kernel-builder
 spec:
   schedule: "0 5 * * *"
+  concurrencyPolicy: Forbid
   jobTemplate:
     spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 10800
       template:
         spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
           containers:
-          - name: builder
-            image: container-registry.local:5000/kernel-builder-k8s-job:latest
-            env:
-              - name: DOCKER_HOST
-                value: unix:///var/run/docker.sock
+            - name: build
+              image: container-registry.local:5000/linux-kernel-builder:latest
+              imagePullPolicy: Always
+              command: ["/bin/bash", "/opt/kernel-build/kernel-build-job.sh"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: KERNEL_TREE
+                  value: https://github.com/torvalds/linux
+                - name: KERNEL_REF
+                  value: master
+                - name: KERNEL_TAG_OVERWRITE
+                  value: linus-master
+                - name: KERNEL_BUILD_MEMORY_LIMIT_GIB
+                  valueFrom:
+                    resourceFieldRef:
+                      containerName: build
+                      resource: limits.memory
+                      divisor: 1Gi
 {% if mitmproxy_enabled %}
-              - name: HTTP_PROXY
-                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-              - name: HTTPS_PROXY
-                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-              - name: NO_PROXY
-                value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
-              - name: http_proxy
-                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-              - name: https_proxy
-                value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
-              - name: no_proxy
-                value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+                - name: HTTP_PROXY
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: HTTPS_PROXY
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: NO_PROXY
+                  value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+                - name: http_proxy
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: https_proxy
+                  value: http://mitmproxy.mitmproxy.svc.cluster.local:8080
+                - name: no_proxy
+                  value: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,.svc,.svc.cluster.local,container-registry.local
+                - name: SSL_CERT_FILE
+                  value: /etc/ci-ca/ca-certificates.crt
+                - name: CURL_CA_BUNDLE
+                  value: /etc/ci-ca/ca-certificates.crt
+                - name: GIT_SSL_CAINFO
+                  value: /etc/ci-ca/ca-certificates.crt
 {% endif %}
-            resources:
-              requests:
-                memory: "8Gi"
-                cpu: "4"
-              limits:
-                memory: "8Gi"
-                cpu: "4"
-            securityContext:
-              privileged: true
-            volumeMounts:
-            - name: docker-daemon-config
-              mountPath: /etc/docker/daemon.json
-              subPath: daemon.json
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                - name: scripts
+                  mountPath: /opt/kernel-build
+                  readOnly: true
 {% if mitmproxy_enabled %}
-            - name: mitmproxy-ca-cert
-              mountPath: /etc/ssl/certs/mitmproxy-ca-cert.pem
-              subPath: mitmproxy-ca-cert.pem
-              readOnly: true
-            - name: mitmproxy-ca-cert
-              mountPath: /etc/ssl/certs/ca-certificates.crt
-              subPath: ca-certificates.crt
-              readOnly: true
+                - name: mitmproxy-ca-cert
+                  mountPath: /etc/ci-ca
+                  readOnly: true
 {% endif %}
           volumes:
-          - name: docker-daemon-config
-            configMap:
-              name: docker-daemon-config
+            - name: work
+              emptyDir: {}
+            - name: scripts
+              configMap:
+                name: kernel-build-scripts
+                defaultMode: 365
 {% if mitmproxy_enabled %}
-          - name: mitmproxy-ca-cert
-            configMap:
-              name: mitmproxy-ca-cert
+            - name: mitmproxy-ca-cert
+              configMap:
+                name: mitmproxy-ca-cert
+                items:
+                  - key: ca-certificates.crt
+                    path: ca-certificates.crt
 {% endif %}
-          restartPolicy: OnFailure

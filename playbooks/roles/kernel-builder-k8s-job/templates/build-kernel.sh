@@ -8,16 +8,27 @@
 set -e
 set -x
 
-cd /
-mkdir -p /linux
-cd /linux
+BUILD_ROOT="${BUILD_ROOT:-}"
+MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
+linux_dir="${BUILD_ROOT}/linux"
+initramfs_dir="${BUILD_ROOT}/tmp/initramfs"
+base_initramfs="${BUILD_ROOT}/base-initramfs.cpio.gz"
+kernel_config="${BUILD_ROOT}/base-kernel-config"
+output_dir="${BUILD_ROOT}/output"
+version_dir="${BUILD_ROOT}/version"
+initramfs_archive="${BUILD_ROOT}/tmp/initramfs.cpio.gz"
+modules_tarball="${BUILD_ROOT}/tmp/kernel-modules.tar.gz"
+
+cd "${BUILD_ROOT:-/}"
+mkdir -p "$linux_dir"
+cd "$linux_dir"
 git init
 git remote add origin $KERNEL_TREE
 git fetch origin --depth=5 "${KERNEL_REF}"
 git checkout FETCH_HEAD
 git log -1
 
-cp /base-kernel-config /linux/.config
+cp "$kernel_config" "$linux_dir/.config"
 yes "" | make olddefconfig
 ./scripts/config --disable CONFIG_MODULE_SIG
 ./scripts/config --disable CONFIG_MODULE_SIG_ALL
@@ -145,40 +156,56 @@ fi
 # appending -dirty or + to the kernel version string. If we do not do this, the
 # kernel modules (which uses the kernel version string) might get installed to a
 # directory that does not match the kernel version string of the running kernel.
-make -j$(nproc) LOCALVERSION=
+make -j"$MAKE_JOBS" LOCALVERSION=
 
-mkdir -p /tmp/initramfs
-cd /tmp/initramfs
-lsinitrd --unpack /base-initramfs.cpio.gz
-#Replace kernel modules
+mkdir -p "$initramfs_dir" "$version_dir" "$output_dir"
+# shellcheck disable=SC2016
+initramfs_script='
+set -e
+initramfs_dir=$1
+base_initramfs=$2
+linux_dir=$3
+make_jobs=$4
+initramfs_archive=$5
+
+cd "$initramfs_dir"
+lsinitrd --unpack "$base_initramfs"
 rm -rf lib/modules/*
-cd /linux
-make -j$(nproc) -s modules_install INSTALL_MOD_PATH=/tmp/initramfs INSTALL_MOD_STRIP=1 LOCALVERSION=
-cd /tmp/initramfs
-find . | cpio -o -H newc | gzip -c > /initramfs.cpio.gz
-
-cd /linux
-mkdir -p /version
-if [ -z "$KERNEL_TAG_OVERWRITE" ]; then
-  echo "KERNEL_VERSION=$(git describe --always --match=NeVeRmAtCh --abbrev=12 --dirty)" > /version/tag;
+cd "$linux_dir"
+make -j"$make_jobs" -s modules_install INSTALL_MOD_PATH="$initramfs_dir" INSTALL_MOD_STRIP=1 LOCALVERSION=
+cd "$initramfs_dir"
+find . | cpio -o -H newc | gzip -c > "$initramfs_archive"
+'
+if [ "$(id -u)" -eq 0 ]; then
+  bash -c "$initramfs_script" -- "$initramfs_dir" "$base_initramfs" \
+    "$linux_dir" "$MAKE_JOBS" "$initramfs_archive"
 else
-  echo "KERNEL_VERSION=$KERNEL_TAG_OVERWRITE" > /version/tag;
+  fakeroot -- bash -c "$initramfs_script" -- "$initramfs_dir" \
+    "$base_initramfs" "$linux_dir" "$MAKE_JOBS" "$initramfs_archive"
 fi
-source /version/tag
+
+cd "$linux_dir"
+if [ -z "$KERNEL_TAG_OVERWRITE" ]; then
+  echo "KERNEL_VERSION=$(git describe --always --match=NeVeRmAtCh --abbrev=12 --dirty)" > "$version_dir/tag";
+else
+  echo "KERNEL_VERSION=$KERNEL_TAG_OVERWRITE" > "$version_dir/tag";
+fi
+# shellcheck disable=SC1091
+source "$version_dir/tag"
 
 
-cp vmlinux /output/vmlinux-${KERNEL_VERSION}
-chmod 755 /output/vmlinux-${KERNEL_VERSION}
+cp vmlinux "$output_dir/vmlinux-${KERNEL_VERSION}"
+chmod 755 "$output_dir/vmlinux-${KERNEL_VERSION}"
 
-cp /initramfs.cpio.gz /output/initramfs-${KERNEL_VERSION}.img
-chmod 644 /output/initramfs-${KERNEL_VERSION}.img
+cp "$initramfs_archive" "$output_dir/initramfs-${KERNEL_VERSION}.img"
+chmod 644 "$output_dir/initramfs-${KERNEL_VERSION}.img"
 
-cp /linux/.config /output/config-${KERNEL_VERSION}
+cp "$linux_dir/.config" "$output_dir/config-${KERNEL_VERSION}"
 
 #Pack the modules in a isofs so we can easily mount it in the VM via the same container disk
-cd /tmp/initramfs/usr/lib/modules/
+cd "$initramfs_dir/usr/lib/modules/"
 echo "$KERNEL_REF" > kernel-ref.info
 echo "$KERNEL_VERSION" > kernel-version.info
-tar -czvf /tmp/kernel-modules.tar.gz .
-mkisofs -o /output/kernel-modules.isofs /tmp/kernel-modules.tar.gz
-chmod 644 /output/kernel-modules.isofs
+tar --owner=0 --group=0 --numeric-owner -czvf "$modules_tarball" .
+mkisofs -o "$output_dir/kernel-modules.isofs" "$modules_tarball"
+chmod 644 "$output_dir/kernel-modules.isofs"

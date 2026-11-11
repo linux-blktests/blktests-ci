@@ -80,6 +80,14 @@ function install_requirements() {
   ensure_logcli
 }
 
+function install_build_requirements() {
+  if ! command -v j2 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo apt-get -y install j2cli jq
+  fi
+  ensure_kubectl
+}
+
 function resolve_host_devices() {
   local devices_json="[]"
 
@@ -334,6 +342,9 @@ TEMPLATES_DIR="${TEMPLATES_DIR:-$(dirname "$0")/../../../playbooks/roles/k8s-ins
 case "$1" in
   install_requirements)
     install_requirements
+    ;;
+  install_build_requirements)
+    install_build_requirements
     ;;
   run_ssh_cmds)
     run_ssh_cmds

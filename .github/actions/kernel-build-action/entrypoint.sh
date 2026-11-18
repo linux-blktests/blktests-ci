@@ -119,6 +119,8 @@ build() {
   : "${INPUT_KERNEL_TREE:?kernel_tree input is required}"
   : "${INPUT_KERNEL_REF:?kernel_ref input is required}"
   : "${GITHUB_OUTPUT:?GITHUB_OUTPUT is required}"
+  [[ ${INPUT_KERNEL_TAG_OVERWRITE:-} != linus-master ]] ||
+    fail "kernel_tag_overwrite 'linus-master' is reserved for the nightly build."
   command -v jq >/dev/null 2>&1 || fail "jq is required"
   command -v j2 >/dev/null 2>&1 || fail "j2 is required"
   command -v kubectl >/dev/null 2>&1 || fail "kubectl is required"

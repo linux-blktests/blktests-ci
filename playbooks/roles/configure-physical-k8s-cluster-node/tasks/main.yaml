@@ -178,11 +178,14 @@
 # *before* mpt3sas (and hand it the id list), and force the vfio modules into the
 # initramfs so that ordering actually applies during early boot.
 #
-# NOTE: the softdep is intentionally scoped to mpt3sas only. We deliberately do
-# NOT add one for nvme: if the node boots from an NVMe that shares a
-# vendor:device id with a passthrough NVMe, vfio-pci would also claim the boot
-# disk. NVMe passthrough on an NVMe-booting host needs separate, per-slot care.
-- name: "Install vfio-pci modprobe config (load before mpt3sas, claim passthrough ids)"
+# The same race hits nvme (passthrough NVMe drives) and mlx5_core (ConnectX
+# VFs) wherever vfio-pci is a module rather than built in, e.g. Ubuntu 24.04's
+# 6.8 kernel: initramfs-tools loads /etc/initramfs-tools/modules only after
+# udev coldplug has already loaded the native drivers. So every native driver
+# of a passthrough id gets a softdep. vfio-pci still claims only the listed
+# ids, so a boot disk must not share a vendor:device id with vfio_ids. The
+# cmdline ids already require that on kernels with vfio-pci built in.
+- name: "Install vfio-pci modprobe config (load before native drivers, claim passthrough ids)"
   become: yes
   copy:
     dest: /etc/modprobe.d/vfio.conf
@@ -196,6 +199,8 @@
       # kubevirt-config.yaml; do not edit by hand.
       options vfio-pci ids={{ vfio_ids | join(',') }}
       softdep mpt3sas pre: vfio-pci
+      softdep nvme pre: vfio-pci
+      softdep mlx5_core pre: vfio-pci
   register: vfio_modprobe_conf
   when: vfio_ids | length > 0
 

@@ -12,6 +12,16 @@
       - runner_set_name | length <= 47
     fail_msg: "runner_set_name must be at most 47 characters so gh-runner-<set>-build stays within the 63-character DNS label limit."
 
+- name: "Set Kubernetes API IPs for network policies"
+  ansible.builtin.set_fact:
+    k8s_api_ips: "{{ groups['physical_k8s_cluster_nodes'] | map('extract', hostvars, 'ansible_host') | list }}"
+
+- name: "Validate Kubernetes API IPs for network policies"
+  ansible.builtin.assert:
+    that:
+      - k8s_api_ips | length > 0
+      - (k8s_api_ips | select('match', '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$') | list | length) == (k8s_api_ips | length)
+
 - name: "Reject PAT authentication"
   ansible.builtin.assert:
     that:
@@ -97,6 +107,37 @@
   kubernetes.core.k8s:
     state: present
     template: ../templates/kernel-build-namespace.yaml.j2
+
+- name: "Apply network policies to the runner namespaces"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/ci-network-policies.yaml.j2
+  vars:
+    netpol_namespace: "{{ item.namespace }}"
+    netpol_allow_api: "{{ item.allow_api | bool }}"
+    netpol_allow_registry: "{{ item.allow_registry | bool }}"
+    netpol_allow_ci_cache: "{{ item.allow_ci_cache | bool }}"
+    netpol_allow_loki: "{{ item.allow_loki | bool }}"
+    netpol_allow_ingress_from_kubevirt: "{{ item.allow_ingress_from_kubevirt | bool }}"
+  loop:
+    - namespace: "gh-runner-{{ runner_set_name }}"
+      allow_api: true
+      allow_registry: true
+      allow_ci_cache: true
+      allow_loki: true
+      allow_ingress_from_kubevirt: false
+    - namespace: "gh-runner-{{ runner_set_name }}-vm"
+      allow_api: false
+      allow_registry: false
+      allow_ci_cache: false
+      allow_loki: false
+      allow_ingress_from_kubevirt: true
+    - namespace: "gh-runner-{{ runner_set_name }}-build"
+      allow_api: false
+      allow_registry: true
+      allow_ci_cache: false
+      allow_loki: false
+      allow_ingress_from_kubevirt: false
 
 - name: "Copy mitmproxy CA cert ConfigMap to runner namespace"
   kubernetes.core.k8s:

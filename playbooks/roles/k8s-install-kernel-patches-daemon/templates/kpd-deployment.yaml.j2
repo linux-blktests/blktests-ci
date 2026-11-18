@@ -36,7 +36,7 @@ spec:
     spec:
       containers:
         - name: kpd
-          image: container-registry.local:5000/kernel-patches-daemon:latest
+          image: {{ kpd_image | tojson }}
           command: ["python", "/app/scripts/kpd-leader-election.py"]
           env:
             - name: GIT_AUTHOR_NAME

@@ -275,6 +275,24 @@
     state: present
     template: ../templates/kubevirt-actions-runner-rbac.yaml.j2
 
+- name: "Bind the runner ServiceAccount to read nightly kernel image digests"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: "kernel-image-digests-reader-gl-runner-{{ runner_set_name }}"
+        namespace: gh-runner-kernel-builder
+      subjects:
+        - kind: ServiceAccount
+          name: kubevirt-actions-runner
+          namespace: "gl-runner-{{ runner_set_name }}"
+      roleRef:
+        kind: Role
+        name: kernel-image-digests-reader
+        apiGroup: rbac.authorization.k8s.io
+
 - name: "Remove VM objects that older versions put into the runner namespace"
   kubernetes.core.k8s:
     state: absent

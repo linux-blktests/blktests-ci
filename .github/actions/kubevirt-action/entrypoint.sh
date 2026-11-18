@@ -10,6 +10,25 @@ function _norm_ver() {
   echo "$1" | sed -E 's/^(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/'
 }
 
+function get_vm_namespace() {
+  if [[ -n ${KUBEVIRT_VM_NAMESPACE:-} ]]; then
+    printf '%s\n' "$KUBEVIRT_VM_NAMESPACE"
+    return
+  fi
+  local namespace_file=/var/run/secrets/kubernetes.io/serviceaccount/namespace
+  if [[ ! -r $namespace_file ]]; then
+    echo "ERROR: cannot determine the VM namespace; $namespace_file is missing or unreadable." >&2
+    return 1
+  fi
+  local namespace
+  namespace=$(<"$namespace_file")
+  if [[ -z $namespace ]]; then
+    echo "ERROR: cannot determine the VM namespace; $namespace_file is empty." >&2
+    return 1
+  fi
+  printf '%s-vm\n' "$namespace"
+}
+
 # Download <url> and install it onto PATH as /usr/local/bin/<name> (executable).
 function _install_bin() {
   curl -fsSL -o "/tmp/$2" "$1"
@@ -124,14 +143,14 @@ function resolve_host_devices() {
 # is still collected separately by the always() extract_dmesg_logs step.
 function dump_vm_diagnostics() {
   echo "===== diagnostics for ${vm_name} ====="
-  kubectl describe vm "${vm_name}" || true
-  kubectl describe vmi "${vm_name}" || true
+  kubectl describe vm "${vm_name}" -n "$vm_namespace" || true
+  kubectl describe vmi "${vm_name}" -n "$vm_namespace" || true
   local vmi_uid pod
-  vmi_uid=$(kubectl get vmi "${vm_name}" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  vmi_uid=$(kubectl get vmi "${vm_name}" -n "$vm_namespace" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
   if [ -n "${vmi_uid}" ]; then
-    pod=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    pod=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -n "$vm_namespace" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     if [ -n "${pod}" ]; then
-      kubectl describe pod "${pod}" || true
+      kubectl describe pod "${pod}" -n "$vm_namespace" || true
     fi
   fi
 }
@@ -196,13 +215,13 @@ runcmd:
   - "/bin/sh /root/init.sh"
 EOF
     printf 'instance-id: %s\nlocal-hostname: %s\n' "${vm_name}" "${vm_name}" > meta-data
-    kubectl create configmap ${vm_name}-cloud-init \
+    kubectl create configmap ${vm_name}-cloud-init -n "$vm_namespace" \
       --from-file=user-data=user-data \
       --from-file=meta-data=meta-data \
-      --dry-run=client -o yaml | kubectl apply -f -
+      --dry-run=client -o yaml | kubectl apply -n "$vm_namespace" -f -
   else
     j2 ${TEMPLATES_DIR}/vm-init.sh.j2 -o init.sh
-    kubectl create configmap ${vm_name}-cloud-init --from-file=init.sh=init.sh --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create configmap ${vm_name}-cloud-init -n "$vm_namespace" --from-file=init.sh=init.sh --dry-run=client -o yaml | kubectl apply -n "$vm_namespace" -f -
   fi
 
   # Write YAML data file for VM template rendering (host_devices is a JSON
@@ -224,13 +243,13 @@ EOF
 
   # Render and create VM
   j2 ${TEMPLATES_DIR}/vm.yaml.j2 vm-data.yaml -o vm.yml
-  kubectl create -f vm.yml
+  kubectl create -n "$vm_namespace" -f vm.yml
   # EFI/OVMF boot plus enumeration of a passed-through HBA option ROM makes
   # host-device VMs noticeably slower to reach "Running"; the previous 300s was
   # too tight and produced intermittent "timed out waiting for Running"
   # failures. Give them more headroom (overridable via VM_RUNNING_TIMEOUT).
   local running_timeout="${VM_RUNNING_TIMEOUT:-600}"
-  if ! kubectl wait vm ${vm_name} --for=jsonpath='{.status.printableStatus}'=Running --timeout="${running_timeout}s"; then
+  if ! kubectl wait vm ${vm_name} -n "$vm_namespace" --for=jsonpath='{.status.printableStatus}'=Running --timeout="${running_timeout}s"; then
     echo "ERROR: ${vm_name} did not reach Running within ${running_timeout}s." >&2
     dump_vm_diagnostics || true
     return 1
@@ -246,12 +265,12 @@ EOF
   local ready_deadline=$(( SECONDS + ready_timeout ))
   while true; do
     local rc=0
-    virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" \
+    virtctl ssh -n "$vm_namespace" ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" \
       --command='test -f /vm-ready && exit 0; test -f /vm-init-failed && exit 3; exit 2' || rc=$?
     [ "${rc}" -eq 0 ] && break
     if [ "${rc}" -eq 3 ]; then
       echo "ERROR: guest provisioning failed; /vm-init-failed present in ${vm_name}:" >&2
-      virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command='cat /vm-init-failed' || true
+      virtctl ssh -n "$vm_namespace" ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command='cat /vm-init-failed' || true
       dump_vm_diagnostics || true
       return 1
     fi
@@ -274,7 +293,7 @@ EOF
     run_cmds="set -a; . /etc/ci-devices.env; set +a
 ${run_cmds}"
   fi
-  virtctl ssh ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
+  virtctl ssh -n "$vm_namespace" ${vm_user}@vmi/${vm_name} "${ssh_options[@]}" --command="${run_cmds}"
 }
 
 function extract_test_artifacts_for_upload() {
@@ -285,7 +304,7 @@ function extract_test_artifacts_for_upload() {
   vm_artifact_upload_dir="$1"
   rm -rf artifacts
   mkdir artifacts
-  virtctl scp "${ssh_options[@]}" -r ${vm_user}@vmi/${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
+  virtctl scp -n "$vm_namespace" "${ssh_options[@]}" -r ${vm_user}@vmi/${vm_name}:/home/${vm_user}/${vm_artifact_upload_dir} artifacts
 }
 
 function extract_kernel_artifacts() {
@@ -318,16 +337,16 @@ function extract_kernel_artifacts() {
 function extract_dmesg_logs() {
   rm -rf dmesg-logs
   mkdir dmesg-logs
-  kubectl describe vmi $vm_name > ./dmesg-logs/vmi-description.log
-  vmi_uid=$(kubectl get vmi "${vm_name}" -o jsonpath='{.metadata.uid}')
-  log_pod_name=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -o jsonpath='{.items[0].metadata.name}')
-  since_time=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" --no-headers | awk 'NR==1{print $5}' | xargs)
+  kubectl describe vmi $vm_name -n "$vm_namespace" > ./dmesg-logs/vmi-description.log
+  vmi_uid=$(kubectl get vmi "${vm_name}" -n "$vm_namespace" -o jsonpath='{.metadata.uid}')
+  log_pod_name=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -n "$vm_namespace" -o jsonpath='{.items[0].metadata.name}')
+  since_time=$(kubectl get pods -l kubevirt.io/created-by="${vmi_uid}" -n "$vm_namespace" --no-headers | awk 'NR==1{print $5}' | xargs)
   logcli --addr=http://loki.logging.svc.cluster.local:3100 query "{container=\"guest-console-log\", pod=\"${log_pod_name}\"}" --limit=0 --since=${since_time} > ./dmesg-logs/dmesg.log
 }
 
 function cleanup_vm() {
-  kubectl delete -f vm.yml
-  kubectl delete configmap ${vm_name}-cloud-init --ignore-not-found=true
+  kubectl delete -f vm.yml -n "$vm_namespace"
+  kubectl delete configmap ${vm_name}-cloud-init -n "$vm_namespace" --ignore-not-found=true
 }
 
 set -euxo pipefail
@@ -341,24 +360,31 @@ TEMPLATES_DIR="${TEMPLATES_DIR:-$(dirname "$0")/../../../playbooks/roles/k8s-ins
 
 case "$1" in
   install_requirements)
+    vm_namespace="$(get_vm_namespace)"
     install_requirements
     ;;
   install_build_requirements)
+    vm_namespace="$(get_vm_namespace)"
     install_build_requirements
     ;;
   run_ssh_cmds)
+    vm_namespace="$(get_vm_namespace)"
     run_ssh_cmds
     ;;
   extract_test_artifacts_for_upload)
+    vm_namespace="$(get_vm_namespace)"
     extract_test_artifacts_for_upload "$2"
     ;;
   extract_kernel_artifacts)
+    vm_namespace="$(get_vm_namespace)"
     extract_kernel_artifacts
     ;;
   extract_dmesg_logs)
+    vm_namespace="$(get_vm_namespace)"
     extract_dmesg_logs
     ;;
   cleanup_vm)
+    vm_namespace="$(get_vm_namespace)"
     cleanup_vm
     ;;
   *)

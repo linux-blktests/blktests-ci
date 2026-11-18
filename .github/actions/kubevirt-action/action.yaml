@@ -13,7 +13,7 @@ inputs:
     required: false
     default: ""
   kernel_image_digest:
-    description: "Digest (sha256:...) of the kernel containerdisk to boot, as returned by kernel-build-action. Pins the VM to that exact image. If omitted, the image tagged kernel_version is used."
+    description: "Digest (sha256:...) of the kernel containerdisk to boot, as returned by kernel-build-action. Pins the VM to that exact image. If omitted, the digest that the nightly build recorded for kernel_version in ConfigMap kernel-image-digests is used, and the step fails when there is none."
     required: false
     default: ""
   run_cmds:

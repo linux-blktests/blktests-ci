@@ -30,7 +30,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: build
-              image: container-registry.local:5000/linux-kernel-builder:latest
+              image: {{ kernel_builder_image | tojson }}
               imagePullPolicy: Always
               command: ["/bin/bash", "/opt/kernel-build/kernel-build-job.sh"]
               securityContext:

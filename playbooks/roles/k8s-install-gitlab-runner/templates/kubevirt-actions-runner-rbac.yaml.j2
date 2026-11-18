@@ -19,7 +19,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: kubevirt-actions-runner
-  namespace: "gl-runner-{{ runner_set_name }}"
+  namespace: "gl-runner-{{ runner_set_name }}-vm"
 rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachines"]
@@ -41,7 +41,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kubevirt-actions-runner
-  namespace: "gl-runner-{{ runner_set_name }}"
+  namespace: "gl-runner-{{ runner_set_name }}-vm"
 subjects:
   - kind: ServiceAccount
     name: kubevirt-actions-runner

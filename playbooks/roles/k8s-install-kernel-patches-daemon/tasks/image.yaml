@@ -64,14 +64,26 @@
 
 - name: "Build and push kernel-patches-daemon image to private registry"
   shell: |
-    docker build \
+    meta=$(mktemp)
+    trap 'rm -f "$meta"' EXIT
+    docker build --push --metadata-file "$meta" \
       --build-arg http_proxy \
       --build-arg https_proxy \
       --build-arg no_proxy \
-      -t {{ registry_ip }}:32000/kernel-patches-daemon:latest .
-    docker push {{ registry_ip }}:32000/kernel-patches-daemon:latest
+      -t {{ registry_ip }}:32000/kernel-patches-daemon:latest . >&2
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$meta"
   args:
     chdir: "{{ kpd_build_dir.path }}/kernel-patches-daemon"
+  register: kpd_image_push
+
+- name: "Validate the kernel-patches-daemon image digest"
+  ansible.builtin.assert:
+    that:
+      - kpd_image_push.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+
+- name: "Set the kernel-patches-daemon image to the pushed digest"
+  ansible.builtin.set_fact:
+    kpd_image: "container-registry.local:5000/kernel-patches-daemon@{{ kpd_image_push.stdout | trim }}"
 
 - name: "Cleanup kpd build directory"
   file:

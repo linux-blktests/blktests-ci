@@ -19,19 +19,15 @@
       prompt: GitHub repo URL that the runner set should serve
       private: false
     - name: arc_github_app_id
-      prompt: "GitHub App ID (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      prompt: "GitHub App ID (leave all three App fields empty to reuse the existing secret)"
       default: ""
       private: false
     - name: arc_github_app_installation_id
-      prompt: "GitHub App Installation ID (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      prompt: "GitHub App Installation ID (leave all three App fields empty to reuse the existing secret)"
       default: ""
       private: false
     - name: arc_github_app_private_key_path
-      prompt: "Path to GitHub App private key .pem file (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
-      default: ""
-      private: false
-    - name: github_token
-      prompt: "GitHub PAT (optional - PAT or APP) (or leave ALL auth fields empty to reuse existing secret)"
+      prompt: "Path to the GitHub App private key .pem file (leave all three App fields empty to reuse the existing secret)"
       default: ""
       private: false
   tasks:

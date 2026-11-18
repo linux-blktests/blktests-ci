@@ -646,7 +646,6 @@ def recreate_argv(scale_set: RunnerScaleSet, *, relative: bool = False,
             "arc_github_app_id": "",
             "arc_github_app_installation_id": "",
             "arc_github_app_private_key_path": "",
-            "github_token": "",
         }
     else:
         extra_vars = {

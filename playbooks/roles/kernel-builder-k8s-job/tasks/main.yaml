@@ -95,18 +95,30 @@
       extra_ca_cert=$(cat "$EXTRA_CA_CERT_PATH")
       set -- --build-arg "EXTRA_CA_CERT=$extra_ca_cert"
     fi
-    docker build \
+    meta=$(mktemp)
+    trap 'rm -f "$meta"' EXIT
+    docker build --push --metadata-file "$meta" \
       --build-arg http_proxy \
       --build-arg https_proxy \
       --build-arg no_proxy \
       "$@" \
       -t {{ registry_ip }}:32000/linux-kernel-builder:latest \
-      -f Dockerfile.linux-kernel-builder .
-    docker push {{ registry_ip }}:32000/linux-kernel-builder:latest
+      -f Dockerfile.linux-kernel-builder . >&2
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$meta"
   args:
     chdir: ./roles/kernel-builder-k8s-job/templates/
   environment:
     EXTRA_CA_CERT_PATH: "{{ corporate_ca_cert_path | default('') | expanduser }}"
+  register: kernel_builder_image_push
+
+- name: "Validate the kernel builder image digest"
+  ansible.builtin.assert:
+    that:
+      - kernel_builder_image_push.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+
+- name: "Set the kernel builder image to the pushed digest"
+  ansible.builtin.set_fact:
+    kernel_builder_image: "container-registry.local:5000/linux-kernel-builder@{{ kernel_builder_image_push.stdout | trim }}"
 
 - name: "Create kernel-build-scripts ConfigMap"
   kubernetes.core.k8s:

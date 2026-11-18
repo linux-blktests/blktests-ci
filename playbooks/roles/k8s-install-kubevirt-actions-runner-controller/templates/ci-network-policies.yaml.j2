@@ -1,0 +1,101 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: "{{ netpol_namespace }}"
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress
+  namespace: "{{ netpol_namespace }}"
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16", "127.0.0.0/8"]
+{% if netpol_allow_api %}
+    - to:
+{% for ip in k8s_api_ips %}
+        - ipBlock:
+            cidr: "{{ ip }}/32"
+{% endfor %}
+      ports:
+        - {protocol: TCP, port: 6443}
+{% endif %}
+{% if netpol_allow_registry %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: docker-registry
+          podSelector:
+            matchLabels:
+              app: registry
+      ports:
+        - {protocol: TCP, port: 5000}
+{% endif %}
+{% if netpol_allow_ci_cache %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ ci_tools_namespace }}"
+          podSelector:
+            matchLabels:
+              app: ci-bin-cache
+      ports:
+        - {protocol: TCP, port: 80}
+{% endif %}
+{% if netpol_allow_loki %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: logging
+      ports:
+        - {protocol: TCP, port: 3100}
+{% endif %}
+{% if mitmproxy_enabled %}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mitmproxy
+      ports:
+        - {protocol: TCP, port: 8080}
+{% endif %}
+{% if netpol_allow_ingress_from_kubevirt %}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-from-kubevirt
+  namespace: "{{ netpol_namespace }}"
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kubevirt
+{% endif %}

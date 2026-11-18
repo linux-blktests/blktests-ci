@@ -90,6 +90,16 @@
           resourceNames: ["kernel-image-digests"]
           verbs: ["get"]
 
+- name: "Set Kubernetes API IPs for network policies"
+  ansible.builtin.set_fact:
+    k8s_api_ips: "{{ groups['physical_k8s_cluster_nodes'] | map('extract', hostvars, 'ansible_host') | list }}"
+
+- name: "Validate Kubernetes API IPs for network policies"
+  ansible.builtin.assert:
+    that:
+      - k8s_api_ips | length > 0
+      - (k8s_api_ips | select('match', '^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])[.]){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$') | list | length) == (k8s_api_ips | length)
+
 - name: "Disable service account token automount for the default account"
   kubernetes.core.k8s:
     state: present
@@ -138,6 +148,18 @@
 - name: "Set mitmproxy_enabled fact"
   set_fact:
     mitmproxy_enabled: "{{ mitmproxy_ca_configmap.resources | length > 0 }}"
+
+- name: "Apply network policies to the kernel builder namespace"
+  kubernetes.core.k8s:
+    state: present
+    template: "{{ playbook_dir }}/roles/k8s-install-kubevirt-actions-runner-controller/templates/ci-network-policies.yaml.j2"
+  vars:
+    netpol_namespace: gh-runner-kernel-builder
+    netpol_allow_api: true
+    netpol_allow_registry: true
+    netpol_allow_ci_cache: false
+    netpol_allow_loki: false
+    netpol_allow_ingress_from_kubevirt: false
 
 - name: "Copy mitmproxy CA cert ConfigMap to kernel-builder namespace"
   kubernetes.core.k8s:

@@ -28,6 +28,7 @@ storage-related kernel contribution is proposed, on real hardware.
 - [Running staging and prod side by side](#running-staging-and-prod-side-by-side)
 - [Operations and reference](#operations-and-reference)
   - [Kernel builds](#kernel-builds)
+  - [Network isolation and shared ConfigMaps](#network-isolation-and-shared-configmaps)
   - [CI binary cache](#ci-binary-cache)
   - [Access logs via Grafana Loki](#access-logs-via-grafana-loki)
   - [Use the private container registry](#use-the-private-container-registry)
@@ -542,19 +543,19 @@ The second main feature of this project is spawning GitHub Actions runner scale
 sets, following the [architecture](#architecture) above, for different GitHub
 projects.
 
-ARC (Actions Runner Controller) authenticates against the GitHub API. Two methods
-are supported (see the
+ARC (Actions Runner Controller) authenticates against the GitHub API with a
+GitHub App (see the
 [GitHub docs](https://docs.github.com/en/actions/how-tos/manage-runners/use-actions-runner-controller/authenticate-to-the-api)).
-The playbook prompts for all credential fields and infers the method from which
-fields you fill in:
+Personal access tokens are not supported. The role refuses them, also when an
+existing `github-config-secret` holds one. The playbook prompts for the App
+credentials:
 
 | Provide | Result |
 |---------|--------|
-| GitHub App ID + Installation ID + private key path | GitHub App auth (recommended) |
-| GitHub PAT | Personal access token auth |
+| GitHub App ID + Installation ID + private key path | GitHub App auth |
 | Nothing (leave all auth fields empty) | Reuses the existing `github-config-secret` in the namespace (useful for redeploying) |
 
-### Option A: GitHub App authentication (recommended)
+### GitHub App authentication
 
 1. **Create a GitHub App** owned by your organisation. In your organisation's
    GitHub settings, go to Developer settings -> GitHub Apps -> New GitHub App.
@@ -580,38 +581,8 @@ fields you fill in:
 When running the playbook you are prompted for the App ID, Installation ID and
 the path to the `.pem` private key file.
 
-### Option B: Personal access token (PAT)
-
-Generate a new fine-grained personal access token for the repository or
-organization. Follow the
-[GitHub guide](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token)
-and make the following least-privilege choices (the token must be generated in
-your personal settings while selecting the correct `Resource owner`):
-
-```
-For point 7   (Expiration) please select "No expiration" or the longest period
-              possible.
-For point 9   (Owner resource) please select the corresponding owning entity of
-              the repository that should subscribe to the runner sets.
-For point 11  (Repository access) please select "Only select repositories" and
-              add ONLY the one repository that requires the self-hosted testing
-              infrastructure.
-For point 13  (Permissions) please select the following options for Repository
-              permissions (the rest should be granted "No access"):
-  Actions:        Read and write
-  Administration: Read and write
-  Contents:       Read-only
-  Environments:   Read-only
-  Merge queues:   Read-only
-  Metadata:       Read-only
-  Pull request:   Read-only
-  Secrets:        Read-only
-  Variables:      Read and write
-  Webhooks:       Read and write
-  Workflow:       Read and write
-```
-
-Always share the token over a secure channel only.
+Runner jobs create VMs in `gh-runner-<set>-vm`, a namespace without Secrets, so
+a job cannot mount the runner set's App key into a VM.
 
 ### Repository configuration
 
@@ -635,10 +606,10 @@ Run the following in the root of the repository and answer the prompts:
 ansible-playbook -i k8s-inventory.yaml playbooks/setup-github-runner-scale-set.yaml
 ```
 
-The playbook prompts for the runner set name, repo URL and authentication
-credentials. Fill in either the GitHub App fields or the PAT field. Leave all
-auth fields empty to reuse the existing `github-config-secret` (e.g. when
-redeploying a runner scale set with updated configuration).
+The playbook prompts for the runner set name, repo URL and the GitHub App
+credentials. Leave all three App fields empty to reuse the existing
+`github-config-secret` (e.g. when redeploying a runner scale set with updated
+configuration).
 
 The runner scale set `arc-vm-<repo-name>` should now appear under
 Repo -> Settings -> Actions -> Runners.
@@ -648,6 +619,7 @@ Repo -> Settings -> Actions -> Runners.
 - ARC listeners: `kubectl get pods -n arc-systems`
 - ARC pods for a repo: `kubectl get pods -n gh-runner-<repo-name>`
 - VMs: `kubectl get vmi --all-namespaces`
+- VMs of a runner set: `kubectl get vm,vmi -n gh-runner-<repo-name>-vm`
 
 ### Deleting a runner scale set
 
@@ -945,10 +917,14 @@ The Job mounts `kernel-build-job.sh`, `build-kernel.sh`,
 `blktests-ci` repository at run time. Script changes therefore do not require a
 cluster redeploy.
 
-The action returns both a kernel version and the manifest digest. Pass the
-digest to `kubevirt-action` to pin the VM to the exact image. If omitted,
-`kernel_version` selects the image by tag. A nightly CronJob builds
-`torvalds/linux` `master` as `linus-master`.
+The action returns both a kernel version and the manifest digest.
+`kubevirt-action` boots a custom kernel only by digest. Pass
+`kernel_image_digest` from `kernel-build-action`.
+
+`kernel_version` alone works only for tags that the nightly build publishes,
+such as `linus-master`. The nightly CronJob records their digests in ConfigMap
+`kernel-image-digests` in `gh-runner-kernel-builder`, and only that CronJob may
+change it. `kernel_tag_overwrite` cannot be `linus-master`.
 
 ```yaml
 - name: Build kernel
@@ -979,6 +955,29 @@ If CI cannot be drained, first deploy a revision that adds the build namespace
 and builder image while DinD is still present. Then switch the workflows, and
 finally deploy the DinD removal.
 
+### Network isolation and shared ConfigMaps
+
+The GitHub runner, VM, build and `gh-runner-kernel-builder` namespaces deny
+ingress and egress by default. Egress allows DNS and the public internet, with
+private, link-local, loopback and carrier-grade NAT ranges excluded. Additional
+egress is allowed as follows:
+
+- `gh-runner-<set>`: Kubernetes API on TCP 6443, registry on TCP 5000, CI binary
+  cache on TCP 80, and Loki on TCP 3100.
+- `gh-runner-<set>-vm`: no additional egress.
+- `gh-runner-<set>-build`: registry on TCP 5000.
+- `gh-runner-kernel-builder`: Kubernetes API on TCP 6443 and registry on TCP
+  5000.
+
+When mitmproxy is enabled, all four namespaces also allow egress to it on TCP
+8080. VM pods accept ingress only from the `kubevirt` namespace. GitLab runner
+namespaces are not covered yet because their jobs need a GitLab server address
+on the LAN.
+
+A ValidatingAdmissionPolicy prevents `kubevirt-actions-runner` service accounts
+from creating, changing or deleting the shared `disable-hostdev-rom`,
+`prepare-nvme-devices` and `kernel-image-digests` ConfigMaps.
+
 ### Use the private container registry
 
 After configuring the workstation (see
@@ -989,6 +988,10 @@ reference images in Kubernetes deployments through the k3s registry mirror:
 Kernel build Jobs push manifests to the in-cluster registry service at
 `http://registry-service.docker-registry.svc.cluster.local`. Kubelet and
 KubeVirt pull the resulting image through the k3s mirror shown above.
+The registry has no authentication, so Ansible deploys the kernel builder, kpd
+and GitLab runner images by the digest of its own push.
+Replacing a tag in the registry therefore does not change what those workloads
+run.
 
 ### The test VM container disk
 

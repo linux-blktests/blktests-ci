@@ -22,6 +22,74 @@
           pod-security.kubernetes.io/audit: restricted
     state: present
 
+- name: "Create the nightly kernel builder ServiceAccount"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: kernel-builder-nightly
+        namespace: gh-runner-kernel-builder
+
+- name: "Create the kernel image digest ConfigMap if it does not exist"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: kernel-image-digests
+        namespace: gh-runner-kernel-builder
+
+- name: "Create the nightly kernel image digest writer Role"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: kernel-image-digests-writer
+        namespace: gh-runner-kernel-builder
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          resourceNames: ["kernel-image-digests"]
+          verbs: ["get", "patch"]
+
+- name: "Bind the nightly kernel image digest writer Role"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: kernel-image-digests-writer
+        namespace: gh-runner-kernel-builder
+      subjects:
+        - kind: ServiceAccount
+          name: kernel-builder-nightly
+          namespace: gh-runner-kernel-builder
+      roleRef:
+        kind: Role
+        name: kernel-image-digests-writer
+        apiGroup: rbac.authorization.k8s.io
+
+- name: "Create the kernel image digest reader Role"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: kernel-image-digests-reader
+        namespace: gh-runner-kernel-builder
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          resourceNames: ["kernel-image-digests"]
+          verbs: ["get"]
+
 - name: "Disable service account token automount for the default account"
   kubernetes.core.k8s:
     state: present

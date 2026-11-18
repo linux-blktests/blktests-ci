@@ -107,6 +107,13 @@
   kubernetes.core.k8s:
     state: present
     template: ../templates/kernel-build-namespace.yaml.j2
+    # Server-side apply creates or updates each object in one request. A plain
+    # create of ServiceAccount "default" races the one Kubernetes adds to a new
+    # namespace, and the module only warns about the 409, so the token stayed on.
+    apply: true
+    server_side_apply:
+      field_manager: blktests-ci
+      force_conflicts: true
 
 - name: "Apply network policies to the runner namespaces"
   kubernetes.core.k8s:

@@ -64,6 +64,24 @@ function ensure_kubectl() {
   [ -n "$server" ] && _install_bin "https://dl.k8s.io/release/${server}/bin/linux/amd64/kubectl" kubectl
 }
 
+function resolve_kernel_image_digest() {
+  [ -n "${kernel_version:-}" ] || return 0
+  if [ -n "${kernel_image_digest:-}" ]; then
+    [[ $kernel_image_digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "ERROR: kernel_image_digest must be sha256:<64 hex characters>." >&2; return 1; }
+    return 0
+  fi
+  ensure_kubectl
+  local digest
+  digest=$(kubectl get configmap "${KERNEL_DIGEST_CONFIGMAP:-kernel-image-digests}" \
+    -n "${KERNEL_DIGEST_NAMESPACE:-gh-runner-kernel-builder}" -o json |
+    jq -r --arg k "$kernel_version" '.data[$k] // empty') || digest=''
+  if [[ ! $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "ERROR: kernel_version '${kernel_version}' has no trusted digest. Pass kernel_image_digest from kernel-build-action, or use a tag the nightly build publishes, such as linus-master." >&2
+    return 1
+  fi
+  export kernel_image_digest="$digest"
+}
+
 # virtctl: served from the cache pre-matched to the observed KubeVirt version.
 # The fallback queries the cluster and downloads the matching GitHub release.
 function ensure_virtctl() {
@@ -168,16 +186,13 @@ function run_ssh_cmds() {
       echo "ERROR: kernel_image_digest requires kernel_version." >&2
       return 1
     }
-    [[ $kernel_image_digest =~ ^sha256:[0-9a-f]{64}$ ]] || {
-      echo "ERROR: invalid kernel_image_digest '${kernel_image_digest}'." >&2
-      return 1
-    }
   fi
 
   if [ "${guest_os}" = "freebsd" ] && [ -n "${kernel_version}" ]; then
     echo "ERROR: kernel_version is not supported for FreeBSD guests (custom kernels are Linux-only); got '${kernel_version}'." >&2
     return 1
   fi
+  resolve_kernel_image_digest
 
   mitmproxy_ca_cert_path="${MITMPROXY_CA_CERT_PATH:-/etc/ssl/certs/mitmproxy-ca-cert.pem}"
   if [ -f "$mitmproxy_ca_cert_path" ]; then
@@ -317,6 +332,8 @@ function extract_kernel_artifacts() {
     exit 1
   fi
   export kernel_version="${INPUT_KERNEL_VERSION}"
+  export kernel_image_digest="${INPUT_KERNEL_IMAGE_DIGEST:-}"
+  resolve_kernel_image_digest
   dir="${KERNEL_ARTIFACTS_DIR:-${HOME}/kernel-artifacts}"
   if [[ -d "$dir" ]]; then
     if ls ${dir}/boot | grep ${kernel_version}; then
@@ -330,7 +347,7 @@ function extract_kernel_artifacts() {
   registry_extract \
     "${KERNEL_IMAGE_REGISTRY_URL:-http://registry-service.docker-registry.svc.cluster.local}" \
     linux-kernel-containerdisk \
-    "${INPUT_KERNEL_IMAGE_DIGEST:-$kernel_version}" \
+    "$kernel_image_digest" \
     "$dir" boot
 }
 

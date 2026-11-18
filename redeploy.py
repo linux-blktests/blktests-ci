@@ -439,15 +439,17 @@ def terminate(scale_set: RunnerScaleSet, *, dry_run: bool) -> None:
 
     ``helm uninstall`` removes the ARC listener / GitLab runner manager so
     nothing pulls new work; the KubeVirt VMs the jobs spawned are not owned by
-    the release, so they are deleted explicitly.
+    the release, so they are deleted explicitly from the legacy runner and
+    isolated VM namespaces.
     """
     _log(f"  -> terminating {scale_set.label} (release {scale_set.release}, ns {scale_set.namespace})")
     run(["helm", "uninstall", scale_set.release, "-n", scale_set.namespace],
         dry_run=dry_run, check=False)
-    for resource in ("vm", "vmi"):
-        run(["kubectl", "delete", resource, "--all", "-n", scale_set.namespace,
-             "--ignore-not-found=true", "--timeout=180s"],
-            dry_run=dry_run, check=False)
+    for namespace in (scale_set.namespace, f"{scale_set.namespace}-vm"):
+        for resource in ("vm", "vmi"):
+            run(["kubectl", "delete", resource, "--all", "-n", namespace,
+                 "--ignore-not-found=true", "--timeout=180s"],
+                dry_run=dry_run, check=False)
 
 
 def pending_teardown(scale_set: RunnerScaleSet) -> list[tuple[str, str, str]]:

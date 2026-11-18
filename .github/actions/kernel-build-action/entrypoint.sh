@@ -140,7 +140,11 @@ build() {
   architecture=$(runner_architecture)
   printf 'job_name=%s\n' "$job_name" >> "$GITHUB_OUTPUT"
 
-  builder_image="${KERNEL_BUILDER_IMAGE:-container-registry.local:5000/linux-kernel-builder:latest}"
+  builder_image="${KERNEL_BUILDER_IMAGE:-}"
+  [[ -n $builder_image ]] ||
+    fail "KERNEL_BUILDER_IMAGE is not set. Redeploy the runner set so it pins the kernel builder image by digest."
+  [[ $builder_image =~ @sha256:[0-9a-fA-F]{64}$ ]] ||
+    fail "KERNEL_BUILDER_IMAGE must end in @sha256:<64 hex characters>. Redeploy the runner set so it pins the kernel builder image by digest."
   deadline="${KERNEL_BUILD_TIMEOUT_SECONDS:-10800}"
   [[ $deadline =~ ^[0-9]+$ && $deadline -gt 0 ]] || fail "KERNEL_BUILD_TIMEOUT_SECONDS must be a positive integer"
 

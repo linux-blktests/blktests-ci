@@ -19,7 +19,8 @@ spec:
       template:
         spec:
           restartPolicy: Never
-          automountServiceAccountToken: false
+          serviceAccountName: kernel-builder-nightly
+          automountServiceAccountToken: true
           enableServiceLinks: false
           securityContext:
             runAsNonRoot: true
@@ -44,6 +45,8 @@ spec:
                   value: master
                 - name: KERNEL_TAG_OVERWRITE
                   value: linus-master
+                - name: KERNEL_DIGEST_CONFIGMAP
+                  value: kernel-image-digests
                 - name: KERNEL_BUILD_MEMORY_LIMIT_GIB
                   valueFrom:
                     resourceFieldRef:

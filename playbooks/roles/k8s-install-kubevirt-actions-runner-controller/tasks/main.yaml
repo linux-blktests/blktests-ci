@@ -439,6 +439,11 @@
     - {api_version: v1, kind: ConfigMap, name: disable-hostdev-rom}
     - {api_version: v1, kind: ConfigMap, name: prepare-nvme-devices}
 
+- name: "Protect shared CI ConfigMaps"
+  kubernetes.core.k8s:
+    state: present
+    template: ../templates/protect-shared-configmaps.yaml.j2
+
 - name: "Create arc-vm for {{ runner_set_name }}. Kernels are built in restricted Jobs, and this runner set can spawn KubeVirt VMs."
   kubernetes.core.helm:
     name: "arc-vm-{{ runner_set_name }}"

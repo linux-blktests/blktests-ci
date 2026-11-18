@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: protect-shared-ci-configmaps
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["configmaps"]
+  matchConditions:
+    - name: runner-service-account
+      expression: "request.userInfo.username.matches('^system:serviceaccount:[^:]+:kubevirt-actions-runner$')"
+  validations:
+    - expression: "!(request.name in ['disable-hostdev-rom', 'prepare-nvme-devices', 'kernel-image-digests'])"
+      message: "Runner jobs may not create, change or delete the shared CI ConfigMaps."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: protect-shared-ci-configmaps
+spec:
+  policyName: protect-shared-ci-configmaps
+  validationActions: ["Deny"]

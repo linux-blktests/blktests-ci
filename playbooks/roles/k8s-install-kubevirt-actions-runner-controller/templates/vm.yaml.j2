@@ -34,7 +34,7 @@ spec:
         # (OVMF ignores the injected kernel and boots the disk image instead).
         # Keep SeaBIOS and disable the option ROM via an onDefineDomain hook
         # sidecar that sets <rom bar='off'/> on every passed-through PCI device
-        # (ConfigMap disable-hostdev-rom, deployed into the runner namespace).
+        # (ConfigMap disable-hostdev-rom, deployed into the VM namespace).
         # Requires the KubeVirt "Sidecar" feature gate.
         hooks.kubevirt.io/hookSidecars: '[{"args": ["--version", "v1alpha2"], "configMap": {"name": "disable-hostdev-rom", "key": "onDefineDomain.sh", "hookPath": "/usr/bin/onDefineDomain"}}]'
 {% endif %}

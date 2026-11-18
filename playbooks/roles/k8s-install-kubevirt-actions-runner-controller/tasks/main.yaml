@@ -30,6 +30,15 @@
     kind: Namespace
     state: present
 
+- name: "Create the VM namespace gh-runner-{{ runner_set_name }}-vm (never put Secrets here: VMs can mount any Secret of their namespace)"
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gh-runner-{{ runner_set_name }}-vm
+
 - name: "Ensure the arc-systems namespace exists"
   kubernetes.core.k8s:
     name: arc-systems
@@ -218,7 +227,7 @@
       kind: ConfigMap
       metadata:
         name: disable-hostdev-rom
-        namespace: gh-runner-{{ runner_set_name }}
+        namespace: gh-runner-{{ runner_set_name }}-vm
       data:
         onDefineDomain.sh: |
           #!/bin/sh
@@ -248,7 +257,7 @@
       kind: ConfigMap
       metadata:
         name: prepare-nvme-devices
-        namespace: gh-runner-{{ runner_set_name }}
+        namespace: gh-runner-{{ runner_set_name }}-vm
       data:
         prepare-nvme-devices.sh: |
           #!/bin/bash
@@ -357,6 +366,19 @@
   kubernetes.core.k8s:
     state: present
     template: ../templates/kubevirt-actions-runner-rbac.yaml.j2
+
+- name: "Remove VM objects that older versions put into the runner namespace"
+  kubernetes.core.k8s:
+    state: absent
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "gh-runner-{{ runner_set_name }}"
+  loop:
+    - {api_version: rbac.authorization.k8s.io/v1, kind: Role, name: kubevirt-actions-runner}
+    - {api_version: rbac.authorization.k8s.io/v1, kind: RoleBinding, name: kubevirt-actions-runner}
+    - {api_version: v1, kind: ConfigMap, name: disable-hostdev-rom}
+    - {api_version: v1, kind: ConfigMap, name: prepare-nvme-devices}
 
 - name: "Create arc-vm for {{ runner_set_name }}. Kernels are built in restricted Jobs, and this runner set can spawn KubeVirt VMs."
   kubernetes.core.helm:

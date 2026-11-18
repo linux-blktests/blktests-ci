@@ -306,6 +306,11 @@
     - {api_version: v1, kind: ConfigMap, name: disable-hostdev-rom}
     - {api_version: v1, kind: ConfigMap, name: prepare-nvme-devices}
 
+- name: "Protect shared CI ConfigMaps"
+  kubernetes.core.k8s:
+    state: present
+    template: "{{ playbook_dir }}/roles/k8s-install-kubevirt-actions-runner-controller/templates/protect-shared-configmaps.yaml.j2"
+
 - name: "Ensure the scratch directory exists"
   file:
     path: "{{ ansible_tmp_dir }}"

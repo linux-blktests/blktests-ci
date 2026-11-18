@@ -214,10 +214,26 @@
 
 - name: "Build and push the kubevirt runner image (entrypoint + VM templates + base tooling) used as the GitLab job image"
   shell: |
-    docker build -t {{ registry_ip }}:32000/kubevirt-runner:latest \
+    meta=$(mktemp)
+    trap 'rm -f "$meta"' EXIT
+    docker build --push --metadata-file "$meta" \
+      -t {{ registry_ip }}:32000/kubevirt-runner:latest \
       -f {{ playbook_dir }}/../ci/gitlab/Dockerfile.kubevirt-runner \
-      {{ playbook_dir }}/..
-    docker push {{ registry_ip }}:32000/kubevirt-runner:latest
+      {{ playbook_dir }}/.. >&2
+    python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["containerimage.digest"])' "$meta"
+  register: kubevirt_runner_image_push
+
+- name: "Validate the kubevirt runner image digest"
+  ansible.builtin.assert:
+    that:
+      - kubevirt_runner_image_push.stdout | trim is match('^sha256:[0-9a-f]{64}$')
+
+- name: "Set the GitLab runner job image"
+  ansible.builtin.set_fact:
+    kubevirt_runner_job_image: >-
+      {{ 'container-registry.local:5000/kubevirt-runner@' ~ (kubevirt_runner_image_push.stdout | trim)
+         if kubevirt_runner_image == 'container-registry.local:5000/kubevirt-runner:latest'
+         else kubevirt_runner_image }}
 
 - name: "Query KubeVirt CR for permitted PCI host devices"
   kubernetes.core.k8s_info:

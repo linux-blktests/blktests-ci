@@ -32,7 +32,6 @@
 # copy is used as a fallback when the clone is unavailable.
 
 .kubevirt:
-  image: container-registry.local:5000/kubevirt-runner:latest
   tags:
     - kubevirt
   variables:

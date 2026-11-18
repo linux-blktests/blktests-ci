@@ -82,7 +82,7 @@ runners:
         service_account = "kubevirt-actions-runner"
         # Default job image (our kubevirt runner image). Consumers may override
         # it with `image:` in their .gitlab-ci.yml.
-        image = "{{ kubevirt_runner_image }}"
+        image = "{{ kubevirt_runner_job_image }}"
 {% if kubevirt_runner_helper_image is defined and kubevirt_runner_helper_image %}
         helper_image = "{{ kubevirt_runner_helper_image }}"
 {% endif %}

@@ -29,6 +29,8 @@ template:
       image: ghcr.io/actions/actions-runner:latest
       command: ["/home/runner/run.sh"]
       env:
+        - name: KERNEL_BUILDER_IMAGE
+          value: {{ kernel_builder_image | tojson }}
 {% if mitmproxy_enabled %}
         - name: HTTP_PROXY
           value: http://mitmproxy.mitmproxy.svc.cluster.local:8080

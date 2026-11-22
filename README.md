@@ -557,15 +557,29 @@ credentials:
 
 ### GitHub App authentication
 
+A runner scale set registers either with an organization or with a single
+repository. The scope decides which permissions the App needs:
+
+| `github_config_url` | Scope | App permissions |
+|---------------------|-------|-----------------|
+| `https://github.com/<org>` | Organization (recommended) | Metadata: Read-only, Self-hosted runners (organization): Read and write |
+| `https://github.com/<owner>/<repo>` | Repository | Additionally Administration: Read and write |
+
+Administration also lets the App key change the repository's settings, so
+prefer the organization scope. A repository in a personal account can only use
+the repository scope. Without Administration at repository scope, the ARC
+controller logs `403 Forbidden ... Resource not accessible by integration` for
+`POST /repos/<owner>/<repo>/actions/runners/registration-token`, no listener pod
+starts, and GitHub shows the runner scale set as offline.
+
 1. **Create a GitHub App** owned by your organisation. In your organisation's
    GitHub settings, go to Developer settings -> GitHub Apps -> New GitHub App.
    - Set the Homepage URL to
      `https://github.com/actions/actions-runner-controller`.
    - Deactivate Webhooks.
    - Under Repository permissions select:
-     - Administration: Read and write (required when `githubConfigUrl` points to
-       a repository, which is the typical setup)
      - Metadata: Read-only
+     - Administration: Read and write, only for the repository scope
    - Under Organization permissions select:
      - Self-hosted runners: Read and write
    - Click "Create GitHub App".
@@ -575,14 +589,25 @@ credentials:
 
 2. **Install the App** on your organisation. In the left menu hit "Install App"
    and click "Install" for the organisation. Under "Repository access" select the
-   repositories that the runner scale sets should serve (the repos used as
-   `githubConfigUrl`). Note the installation ID (last number in the URL).
+   repositories that the runner scale sets should serve (for the repository
+   scope, the repos used as `github_config_url`). Note the installation ID (last
+   number in the URL).
 
 When running the playbook you are prompted for the App ID, Installation ID and
 the path to the `.pem` private key file.
 
 Runner jobs create VMs in `gh-runner-<set>-vm`, a namespace without Secrets, so
 a job cannot mount the runner set's App key into a VM.
+
+### Runner group for organization runner sets
+
+An organization runner scale set joins the organization's Default runner group.
+That group serves only private repositories until you change it. In the
+organization's Settings -> Actions -> Runner groups -> Default:
+
+- Allow public repositories if a public repository should use the runners.
+- Under Repository access, choose "Selected repositories" and add only the
+  repositories that should run jobs on the cluster.
 
 ### Repository configuration
 
@@ -606,29 +631,32 @@ Run the following in the root of the repository and answer the prompts:
 ansible-playbook -i k8s-inventory.yaml playbooks/setup-github-runner-scale-set.yaml
 ```
 
-The playbook prompts for the runner set name, repo URL and the GitHub App
-credentials. Leave all three App fields empty to reuse the existing
-`github-config-secret` (e.g. when redeploying a runner scale set with updated
-configuration).
+The playbook prompts for the runner set name, the organization or repository
+URL and the GitHub App credentials. Leave all three App fields empty to reuse
+the existing `github-config-secret` (e.g. when redeploying a runner scale set
+with updated configuration).
 
-The runner scale set `arc-vm-<repo-name>` should now appear under
-Repo -> Settings -> Actions -> Runners.
+The runner scale set `arc-vm-<runner-set-name>` should now appear under
+Settings -> Actions -> Runners of the organization or repository. Workflows
+select it with `runs-on: arc-vm-<runner-set-name>`.
 
 ### Debugging
 
 - ARC listeners: `kubectl get pods -n arc-systems`
-- ARC pods for a repo: `kubectl get pods -n gh-runner-<repo-name>`
+- ARC pods of a runner set: `kubectl get pods -n gh-runner-<runner-set-name>`
 - VMs: `kubectl get vmi --all-namespaces`
-- VMs of a runner set: `kubectl get vm,vmi -n gh-runner-<repo-name>-vm`
+- VMs of a runner set: `kubectl get vm,vmi -n gh-runner-<runner-set-name>-vm`
 
 ### Deleting a runner scale set
 
 ```
-helm delete arc-vm-<repo-name> -n gh-runner-<repo-name>
-kubectl delete secret github-config-secret -n gh-runner-<repo-name>
+helm delete arc-vm-<runner-set-name> -n gh-runner-<runner-set-name>
+kubectl delete secret github-config-secret -n gh-runner-<runner-set-name>
 #Double check that everything is deleted:
-kubectl api-resources --verbs=list --namespaced -o name  | xargs -n 1 kubectl get --show-kind --ignore-not-found -n gh-runner-<repo-name>
-kubectl delete ns gh-runner-<repo-name>
+kubectl api-resources --verbs=list --namespaced -o name  | xargs -n 1 kubectl get --show-kind --ignore-not-found -n gh-runner-<runner-set-name>
+kubectl delete ns gh-runner-<runner-set-name> gh-runner-<runner-set-name>-vm gh-runner-<runner-set-name>-build
+kubectl delete clusterrole,clusterrolebinding kubevirt-actions-runner-node-reader-<runner-set-name>
+kubectl delete rolebinding kernel-image-digests-reader-gh-runner-<runner-set-name> -n gh-runner-kernel-builder
 ```
 
 ## GitLab runners

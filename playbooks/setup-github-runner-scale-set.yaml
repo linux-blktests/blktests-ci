@@ -16,7 +16,7 @@
       prompt: Suffix of the GitHub runner set
       private: false
     - name: github_config_url
-      prompt: GitHub repo URL that the runner set should serve
+      prompt: GitHub organization or repository URL that the runner set should serve
       private: false
     - name: arc_github_app_id
       prompt: "GitHub App ID (leave all three App fields empty to reuse the existing secret)"

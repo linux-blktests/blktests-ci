@@ -33,6 +33,8 @@ kubevirt_cri_version: "v1.64.0"
 
 #gha-runner-scale-set
 gha_rss_version: "0.14.1"
+# Rebuilt weekly to keep ARC runners inside GitHub's 30-day version window.
+arc_runner_image: "ghcr.io/linux-blktests/blktests-arc-runner:latest"
 
 #kernel builds
 # Resource defaults for unprivileged kernel-build Jobs. The 40Gi request rounds

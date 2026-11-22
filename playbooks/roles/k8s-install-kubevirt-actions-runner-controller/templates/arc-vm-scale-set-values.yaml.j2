@@ -24,10 +24,21 @@ template:
   # Runner pods have no local container daemon; kernels are built by kernel-build-action.
   spec:
     serviceAccountName: kubevirt-actions-runner
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
     containers:
     - name: runner
-      image: ghcr.io/actions/actions-runner:latest
+      image: {{ arc_runner_image | tojson }}
+      imagePullPolicy: Always
       command: ["/home/runner/run.sh"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
       env:
         - name: KERNEL_BUILDER_IMAGE
           value: {{ kernel_builder_image | tojson }}

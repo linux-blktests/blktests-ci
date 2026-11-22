@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+FROM ghcr.io/actions/actions-runner:latest
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends j2cli && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    gpasswd -d runner sudo; \
+    sed -i '/^%sudo.*NOPASSWD:ALL$/d' /etc/sudoers; \
+    visudo -c; \
+    sudo -l -U runner >/tmp/runner-sudo-list 2>&1 || true; \
+    if ! grep -qi 'not allowed to run sudo' /tmp/runner-sudo-list; then \
+      cat /tmp/runner-sudo-list; \
+      echo "runner still has sudo privileges" >&2; \
+      exit 1; \
+    fi; \
+    rm -f /tmp/runner-sudo-list
+
+USER runner

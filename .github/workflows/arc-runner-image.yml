@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Copyright (c) 2026 Western Digital Corporation or its affiliates.
+#
+# Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
+
+name: Build ARC runner image
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+  push:
+    paths:
+      - ci/arc/**
+      - .github/workflows/arc-runner-image.yml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: arc-runner-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Select image tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_branch=$(jq -r '.repository.default_branch // "main"' "$GITHUB_EVENT_PATH")
+          if [[ $GITHUB_EVENT_NAME == schedule || $GITHUB_REF == "refs/heads/${default_branch}" ]]; then
+            tag=latest
+            version_tag=1
+          else
+            tag=$(printf '%s' "$GITHUB_REF_NAME" |
+              tr '[:upper:]' '[:lower:]' |
+              sed -E 's/[^a-z0-9_.-]+/-/g; s/^[.-]+//')
+            tag=${tag:0:128}
+            [[ $tag =~ ^[a-z0-9_][a-z0-9_.-]{0,127}$ ]] || {
+              echo "::error::GITHUB_REF_NAME does not sanitize to a valid Docker tag"
+              exit 1
+            }
+            version_tag=0
+          fi
+          {
+            echo "TAG=${tag}"
+            echo "VERSION_TAG=${version_tag}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and push
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/blktests-arc-runner
+          PUSH: "1"
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: ci/arc/build-image.sh

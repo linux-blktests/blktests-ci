@@ -5,6 +5,13 @@
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
 
+# Keep downloaded runner tools writable without sudo.
+CI_BIN_DIR="${CI_BIN_DIR:-${RUNNER_TEMP:-/tmp}/ci-bin}"
+if [[ ":${PATH}:" != *":${CI_BIN_DIR}:"* ]]; then
+  PATH="${CI_BIN_DIR}:${PATH}"
+fi
+export CI_BIN_DIR PATH
+
 # Normalize a Kubernetes-style version string to vMAJOR.MINOR.PATCH.
 function _norm_ver() {
   echo "$1" | sed -E 's/^(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/'
@@ -29,11 +36,20 @@ function get_vm_namespace() {
   printf '%s-vm\n' "$namespace"
 }
 
-# Download <url> and install it onto PATH as /usr/local/bin/<name> (executable).
+# Download <url> and install it onto PATH as <name> (executable).
 function _install_bin() {
-  curl -fsSL -o "/tmp/$2" "$1"
-  sudo install -m 0755 "/tmp/$2" "/usr/local/bin/$2"
-  rm -f "/tmp/$2"
+  local tmp
+  mkdir -p "$CI_BIN_DIR" || return 1
+  tmp=$(mktemp "${CI_BIN_DIR}/.download.XXXXXX") || return 1
+  if ! curl -fsSL -o "$tmp" "$1"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! install -m 0755 "$tmp" "${CI_BIN_DIR}/$2"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
 }
 
 # In-cluster HTTP cache (deployed by the k8s-install-ci-binary-cache role) that
@@ -42,13 +58,21 @@ function _install_bin() {
 # mitmproxy.
 CI_TOOLS_CACHE_URL="http://ci-bin-cache.ci-tools.svc.cluster.local"
 
-# Install <name> from the in-cluster cache onto PATH. Returns non-zero without
-# touching the system when the cache is unreachable or has not populated
+# Install <name> from the in-cluster cache onto PATH. Returns non-zero when
+# the cache is unreachable or has not populated the binary.
 function _install_from_cache() {
-  local name="$1"
-  curl -fsSL -o "/tmp/${name}" "${CI_TOOLS_CACHE_URL}/${name}" || return 1
-  sudo install -m 0755 "/tmp/${name}" "/usr/local/bin/${name}" || { rm -f "/tmp/${name}"; return 1; }
-  rm -f "/tmp/${name}"
+  local name="$1" tmp
+  mkdir -p "$CI_BIN_DIR" || return 1
+  tmp=$(mktemp "${CI_BIN_DIR}/.download.XXXXXX") || return 1
+  if ! curl -fsSL -o "$tmp" "${CI_TOOLS_CACHE_URL}/${name}"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! install -m 0755 "$tmp" "${CI_BIN_DIR}/${name}"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  rm -f "$tmp"
 }
 
 # kubectl: served from the cache pre-matched to the live server version. The
@@ -99,30 +123,76 @@ function ensure_logcli() {
   command -v logcli >/dev/null 2>&1 && return 0
   _install_from_cache logcli && return 0
   echo "WARNING: CI binary cache unavailable; downloading logcli from the internet." >&2
-  curl -fsSL -o /tmp/logcli.zip "https://github.com/grafana/loki/releases/download/${LOGCLI_VERSION:-v3.6.2}/logcli-linux-amd64.zip"
-  unzip -o /tmp/logcli.zip -d /tmp
-  sudo install -m 0755 /tmp/logcli-linux-amd64 /usr/local/bin/logcli
-  rm -f /tmp/logcli.zip /tmp/logcli-linux-amd64
+  local tmp_zip tmp_dir
+  mkdir -p "$CI_BIN_DIR" || return 1
+  tmp_zip=$(mktemp "${CI_BIN_DIR}/.logcli.XXXXXX") || return 1
+  tmp_dir=$(mktemp -d "${CI_BIN_DIR}/.logcli.XXXXXX") || {
+    rm -f "$tmp_zip"
+    return 1
+  }
+  if ! curl -fsSL -o "$tmp_zip" "https://github.com/grafana/loki/releases/download/${LOGCLI_VERSION:-v3.6.2}/logcli-linux-amd64.zip"; then
+    rm -f "$tmp_zip"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  if ! unzip -o "$tmp_zip" -d "$tmp_dir"; then
+    rm -f "$tmp_zip"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  if ! install -m 0755 "${tmp_dir}/logcli-linux-amd64" "${CI_BIN_DIR}/logcli"; then
+    rm -f "$tmp_zip"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  rm -f "$tmp_zip"
+  rm -rf "$tmp_dir"
+}
+
+function _ensure_runner_tools() {
+  local tool
+  local -a missing=() packages=()
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+  done
+  ((${#missing[@]} == 0)) && return 0
+
+  if sudo -n true >/dev/null 2>&1; then
+    for tool in "${missing[@]}"; do
+      case "$tool" in
+        j2) packages+=(j2cli) ;;
+        jq | unzip) packages+=("$tool") ;;
+      esac
+    done
+    sudo apt-get update || return 1
+    sudo apt-get -y install curl "${packages[@]}"
+    return
+  fi
+
+  printf 'ERROR: missing runner tools: %s. Use the blktests-arc-runner image.\n' \
+    "${missing[*]}" >&2
+  return 1
+}
+
+function _append_ci_bin_dir() {
+  if [[ -n ${GITHUB_PATH:-} ]]; then
+    printf '%s\n' "$CI_BIN_DIR" >> "$GITHUB_PATH"
+  fi
 }
 
 function install_requirements() {
-  # Base tooling is baked into the kubevirt runner image; only install it when
-  # missing (e.g. on the GitHub actions-runner image).
-  if ! command -v j2 >/dev/null 2>&1 || ! command -v unzip >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get -y install curl j2cli unzip jq
-  fi
+  # Keep apt-get for stock images that still permit passwordless sudo.
+  _ensure_runner_tools j2 unzip jq || return 1
   ensure_kubectl
   ensure_virtctl
   ensure_logcli
+  _append_ci_bin_dir
 }
 
 function install_build_requirements() {
-  if ! command -v j2 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-    sudo apt-get update
-    sudo apt-get -y install j2cli jq
-  fi
+  _ensure_runner_tools j2 jq || return 1
   ensure_kubectl
+  _append_ci_bin_dir
 }
 
 function resolve_host_devices() {

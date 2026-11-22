@@ -5,6 +5,13 @@
 #
 # Authors: Dennis Maisenbacher (dennis.maisenbacher@wdc.com)
 
+# Keep downloaded runner tools writable without sudo.
+CI_BIN_DIR="${CI_BIN_DIR:-${RUNNER_TEMP:-/tmp}/ci-bin}"
+if [[ ":${PATH}:" != *":${CI_BIN_DIR}:"* ]]; then
+  PATH="${CI_BIN_DIR}:${PATH}"
+fi
+export CI_BIN_DIR PATH
+
 set -euo pipefail
 
 fail() {

@@ -955,6 +955,21 @@ If CI cannot be drained, first deploy a revision that adds the build namespace
 and builder image while DinD is still present. Then switch the workflows, and
 finally deploy the DinD removal.
 
+### Hardened ARC runner pods
+
+Runner pods run as uid/gid 1001 in a restricted namespace, with `RuntimeDefault`
+seccomp, no privilege escalation and all capabilities dropped. Workflow steps must
+not use `sudo` on the runner; put root work in `run_cmds` inside the VM.
+
+The weekly `.github/workflows/arc-runner-image.yml` workflow builds and pushes
+`ci/arc/Dockerfile.actions-runner` to GHCR. ARC does not auto-update runners,
+and GitHub stops sending jobs to a runner 30 days after a newer runner release.
+GitHub also disables scheduled workflows after 60 days without repository
+activity. Make the GHCR package public once in both the upstream repository and
+each fork. `arc_runner_image` may pin a `:<runner-version>` tag instead of
+`:latest`. On each repository, run the workflow on `main` and make its package
+public before redeploying runner sets with the default image.
+
 ### Network isolation and shared ConfigMaps
 
 The GitHub runner, VM, build and `gh-runner-kernel-builder` namespaces deny

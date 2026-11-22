@@ -35,10 +35,17 @@
 
 - name: "Ensure the gh-runner-{{ runner_set_name }} namespace exists"
   kubernetes.core.k8s:
-    name: gh-runner-{{ runner_set_name }}
-    api_version: v1
-    kind: Namespace
     state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: gh-runner-{{ runner_set_name }}
+        labels:
+          pod-security.kubernetes.io/enforce: restricted
+          pod-security.kubernetes.io/enforce-version: latest
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/audit: restricted
 
 - name: "Create the VM namespace gh-runner-{{ runner_set_name }}-vm (never put Secrets here: VMs can mount any Secret of their namespace)"
   kubernetes.core.k8s:
